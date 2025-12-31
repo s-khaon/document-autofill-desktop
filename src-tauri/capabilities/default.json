@@ -1,0 +1,30 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "default",
+  "description": "Capability for the main window",
+  "windows": ["main"],
+  "permissions": [
+    "core:default",
+    "opener:default",
+    "dialog:default",
+    {
+      "identifier": "shell:allow-execute",
+      "allow": [
+        {
+          "name": "python-script",
+          "cmd": "python3",
+          "args": true,
+          "sidecar": false
+        },
+        {
+          "name": "venv-python",
+          "cmd": "/Users/kang.song/projects/own/document-autofill-desktop/python/.venv/bin/python3",
+          "args": true,
+          "sidecar": false
+        }
+      ]
+    },
+    "shell:default",
+    "fs:default"
+  ]
+}
