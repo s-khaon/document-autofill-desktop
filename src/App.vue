@@ -11,7 +11,7 @@ import {
 import { Command } from "@tauri-apps/plugin-shell";
 import { openPath } from "@tauri-apps/plugin-opener";
 import { exists, readTextFile, mkdir, create, readFile, writeTextFile } from "@tauri-apps/plugin-fs";
-import { appDataDir } from "@tauri-apps/api/path";
+import { appDataDir, appLogDir } from "@tauri-apps/api/path";
 
 // 模板配置数据结构
 interface TemplateConfig {
@@ -1114,6 +1114,17 @@ onMounted(async () => {
   console.log("========== 应用启动完成 ==========");
 });
 
+// 打开日志目录
+async function openLogs() {
+  try {
+    const logDir = await appLogDir();
+    await openPath(logDir);
+  } catch (error) {
+    console.error("Failed to open log dir:", error);
+    errorMsg.value = "无法打开日志目录";
+  }
+}
+
 // 监听选中模板变化
 watch(selectedTemplateId, () => {
   updateFormData();
@@ -1132,6 +1143,9 @@ watch(selectedTemplateId, () => {
         <p>选择模板 → 填写数据 → 生成并打开（默认值仅在配置模板时设置）</p>
       </div>
       <div class="header-actions">
+        <button @click="openLogs" class="secondary small" style="margin-right: 10px">
+          查看日志
+        </button>
         <div class="mode-switch">
           <label>
             <input 

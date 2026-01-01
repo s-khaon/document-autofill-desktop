@@ -2,7 +2,7 @@
 use std::fs::copy;
 use std::path::Path;
 use std::path::PathBuf;
-use tauri::Manager;
+use log::info;
 
 #[tauri::command]
 fn greet(name: &str) -> String {
@@ -16,7 +16,7 @@ fn get_python_executable() -> String {
     let mut path = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     path.push("resources");
     path.push("word_filler");
-    
+
     if path.exists() {
         return path.to_string_lossy().to_string();
     }
@@ -28,8 +28,16 @@ fn get_python_executable() -> String {
         // 检查常见位置
         let venv_paths = vec![
             // python/.venv/bin/python3
-            project_root.join("python").join(".venv").join("bin").join("python3"),
-            project_root.join("python").join("venv").join("bin").join("python3"),
+            project_root
+                .join("python")
+                .join(".venv")
+                .join("bin")
+                .join("python3"),
+            project_root
+                .join("python")
+                .join("venv")
+                .join("bin")
+                .join("python3"),
             // .venv/bin/python3
             project_root.join(".venv").join("bin").join("python3"),
             project_root.join("venv").join("bin").join("python3"),
@@ -53,7 +61,7 @@ fn copy_file(source: String, destination: String) -> Result<(), String> {
     if !Path::new(&source).exists() {
         return Err(format!("源文件不存在: {}", source));
     }
-    
+
     // 复制文件
     match copy(&source, &destination) {
         Ok(_) => Ok(()),
@@ -64,11 +72,34 @@ fn copy_file(source: String, destination: String) -> Result<(), String> {
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
+        .plugin(
+            tauri_plugin_log::Builder::new()
+                .level(tauri_plugin_log::log::LevelFilter::Info)
+                .rotation_strategy(tauri_plugin_log::RotationStrategy::KeepAll)
+                .max_file_size(2 * 1024 * 1024) // 2MB
+                .format(|out, message, record| {
+                    out.finish(format_args!(
+                        "[{} {}] {}",
+                        record.level(),
+                        record.target(),
+                        message
+                    ))
+                })
+                .build(),
+        )
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_fs::init())
-        .invoke_handler(tauri::generate_handler![greet, get_python_executable, copy_file])
+        .setup(|_app| {
+            info!("Backend logging system initialized successfully");
+            Ok(())
+        })
+        .invoke_handler(tauri::generate_handler![
+            greet,
+            get_python_executable,
+            copy_file
+        ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }
