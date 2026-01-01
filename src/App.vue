@@ -9,7 +9,7 @@ import {
 } from "@tauri-apps/plugin-dialog";
 import { Command } from "@tauri-apps/plugin-shell";
 import { openPath } from "@tauri-apps/plugin-opener";
-import { exists, readTextFile, writeTextFile } from "@tauri-apps/plugin-fs";
+import { exists, readTextFile, writeTextFile, mkdir } from "@tauri-apps/plugin-fs";
 import { appDataDir } from "@tauri-apps/api/path";
 
 // 模板配置数据结构
@@ -20,26 +20,90 @@ interface TemplateConfig {
   placeholders: string[];
   defaultValues: Record<string, string>;
   outputDir: string;
+  filenameTemplate: string;
   createdAt: string;
   updatedAt: string;
+  timeFieldConfig: Record<string, string>;
+  dateFormat: string;
 }
 
 // 应用状态
-const outputPath = ref<string>("");
 const isLoading = ref<boolean>(false);
 const errorMsg = ref<string>("");
 const successMsg = ref<string>("");
 const selectedTemplateId = ref<string>("");
-const currentStep = ref<1 | 2 | 3 | 4>(1);
+const currentStep = ref<1 | 2 | 3>(1);
 const generatedOutputPath = ref<string>("");
 const hasEditedForm = ref<boolean>(false);
+const showConfigDialog = ref<boolean>(false);
+
+// 时间类型选择对话框
+const showTimeTypeDialog = ref<boolean>(false);
+const currentConfiguringField = ref<string>("");
+const selectedTimeType = ref<string>("");
+
+// 时间类型选项
+const timeTypeOptions = [
+  {
+    value: "currentDate",
+    label: "当前日期",
+    description: "自动填充完整日期",
+    placeholder: "{{执行时日期}}"
+  },
+  {
+    value: "currentDate.year",
+    label: "当前年份",
+    description: "自动填充年份",
+    placeholder: "{{执行时年}}"
+  },
+  {
+    value: "currentDate.month",
+    label: "当前月份",
+    description: "自动填充月份",
+    placeholder: "{{执行时月}}"
+  },
+  {
+    value: "currentDate.day",
+    label: "当前日期",
+    description: "自动填充日期",
+    placeholder: "{{执行时日}}"
+  }
+];
+
+// 日期格式选项
+const dateFormatOptions = [
+  {
+    value: "yyyy-MM-dd",
+    label: "2025-01-01",
+    description: "标准格式（年-月-日）"
+  },
+  {
+    value: "yyyy/MM/dd",
+    label: "2025/01/01",
+    description: "斜杠格式（年/月/日）"
+  },
+  {
+    value: "yyyy年MM月dd日",
+    label: "2025年01月01日",
+    description: "中文格式"
+  },
+  {
+    value: "MM/dd/yyyy",
+    label: "01/01/2025",
+    description: "美国格式（月/日/年）"
+  },
+  {
+    value: "dd/MM/yyyy",
+    label: "01/01/2025",
+    description: "欧洲格式（日/月/年）"
+  }
+];
 
 // 功能模式：single（单文件生成）或 batch（批量生成）
 const functionMode = ref<'single' | 'batch'>('single');
 
 // 批量处理相关状态
 const batchData = ref<any[]>([]);
-const batchOutputDir = ref<string>("");
 const filenameField = ref<string>("");
 const importedFilePath = ref<string>("");
 
@@ -63,28 +127,22 @@ const placeholders = computed(() => {
 
 const canGoStep2 = computed(() => !!selectedTemplate.value);
 const canGoStep3 = computed(() => !!selectedTemplate.value && placeholders.value.length > 0);
-const canGoStep4 = computed(() => canGoStep3.value);
 
-function canGoToStep(step: 1 | 2 | 3 | 4) {
+function canGoToStep(step: 1 | 2 | 3) {
   if (step === 1) return true;
   if (step === 2) return canGoStep2.value;
-  if (step === 3) return canGoStep3.value; // 允许从步骤1直接跳到步骤3
-  return canGoStep4.value;
+  return canGoStep3.value;
 }
 
-async function goToStep(step: 1 | 2 | 3 | 4) {
+async function goToStep(step: 1 | 2 | 3) {
   if (!canGoToStep(step)) return;
-
-  if (currentStep.value === 2 && step !== 2 && selectedTemplate.value) {
-    await saveConfig();
-  }
 
   currentStep.value = step;
 }
 
 async function nextStep() {
   if (currentStep.value === 1) {
-    await goToStep(3); // 从步骤1直接跳到步骤3
+    await goToStep(2); // 从步骤1跳到步骤2
     return;
   }
   if (currentStep.value === 2) {
@@ -133,9 +191,39 @@ async function saveConfig() {
       console.error("配置文件路径未初始化");
       return;
     }
+    console.log("========== 开始保存配置 ==========");
+    console.log("配置保存路径：", CONFIG_FILE.value);
+    console.log("当前模板数量：", templates.value.length);
+    console.log("模板数据：", JSON.stringify(templates.value, null, 2));
+    
+    // 提取目录路径
+    const dirPath = CONFIG_FILE.value.substring(0, CONFIG_FILE.value.lastIndexOf('/'));
+    console.log("配置文件目录：", dirPath);
+    
+    // 检查目录是否存在，如果不存在则创建
+    try {
+      const dirExists = await exists(dirPath);
+      console.log("目录是否存在：", dirExists);
+      
+      if (!dirExists) {
+        console.log("目录不存在，正在创建...");
+        await mkdir(dirPath, { recursive: true });
+        console.log("目录创建成功！");
+      }
+    } catch (mkdirError) {
+      console.error("创建目录失败：", mkdirError);
+      throw mkdirError;
+    }
+    
+    // 保存配置文件
     await writeTextFile(CONFIG_FILE.value, JSON.stringify(templates.value, null, 2));
+    
+    console.log("配置保存成功！");
+    console.log("========== 配置保存完成 ==========");
   } catch (error) {
-    console.error("保存配置失败:", error);
+    console.error("========== 保存配置失败 ==========");
+    console.error("错误详情：", error);
+    console.error("==================================");
   }
 }
 
@@ -146,17 +234,43 @@ async function loadConfig() {
       console.error("配置文件路径未初始化");
       return;
     }
-    const fileExists = await exists(CONFIG_FILE.value);
-    if (fileExists) {
+    console.log("========== 开始加载配置 ==========");
+    console.log("配置文件路径：", CONFIG_FILE.value);
+    
+    try {
+      console.log("正在尝试读取配置文件...");
       const content = await readTextFile(CONFIG_FILE.value);
+      console.log("配置文件内容长度：", content.length);
+      
       templates.value = JSON.parse(content);
+      console.log("成功解析配置，模板数量：", templates.value.length);
+      console.log("模板数据：", JSON.stringify(templates.value, null, 2));
+      
+      // 确保所有模板都有 timeFieldConfig 字段（向后兼容）
+      templates.value.forEach(template => {
+        if (!template.timeFieldConfig) {
+          template.timeFieldConfig = {};
+        }
+        if (!template.dateFormat) {
+          template.dateFormat = "yyyy-MM-dd";
+        }
+      });
+      
       if (templates.value.length > 0) {
         selectedTemplateId.value = templates.value[0].id;
         updateFormData();
+        console.log("已选中第一个模板：", selectedTemplateId.value);
       }
+    } catch (readError) {
+      console.log("配置文件不存在或读取失败，使用空配置");
+      console.log("错误详情：", readError);
+      templates.value = [];
     }
+    console.log("========== 配置加载完成 ==========");
   } catch (error) {
-    console.error("加载配置失败:", error);
+    console.error("========== 加载配置失败 ==========");
+    console.error("错误详情：", error);
+    console.error("==================================");
     templates.value = [];
   }
 }
@@ -195,8 +309,11 @@ async function addTemplate() {
           ...(placeholders.includes("日") && { "日": currentDay }),
         },
         outputDir: "",
+        filenameTemplate: "",
         createdAt: new Date().toISOString(),
         updatedAt: new Date().toISOString(),
+        timeFieldConfig: {},
+        dateFormat: "yyyy-MM-dd",
       };
       
       // 添加到模板列表
@@ -324,45 +441,17 @@ async function extractPlaceholdersFromTemplate(templatePath: string): Promise<st
 
 // 更新表单数据
 function updateFormData() {
-  // 清空当前表单数据
   Object.keys(formData).forEach(key => delete formData[key]);
   
-  // 如果有选中的模板，初始化表单数据
   if (selectedTemplate.value) {
-    // 初始化默认值
     selectedTemplate.value.placeholders.forEach(placeholder => {
-      formData[placeholder] = selectedTemplate.value?.defaultValues[placeholder] || "";
+      const timeType = selectedTemplate.value?.timeFieldConfig?.[placeholder];
+      if (timeType) {
+        formData[placeholder] = calculateTimeValue(timeType);
+      } else {
+        formData[placeholder] = selectedTemplate.value?.defaultValues[placeholder] || "";
+      }
     });
-    
-    // 设置输出路径
-    if (selectedTemplate.value.outputDir) {
-      outputPath.value = selectedTemplate.value.outputDir + "/output.docx";
-    }
-  }
-}
-
-// 选择输出文件位置
-async function selectOutput() {
-  try {
-    const options: SaveDialogOptions = {
-      title: "保存生成的Word文件",
-      filters: [
-        {
-          name: "Word Documents",
-          extensions: ["docx"],
-        },
-      ],
-      defaultPath: selectedTemplate.value?.outputDir ? `${selectedTemplate.value.outputDir}/output.docx` : "output.docx",
-    };
-
-    const selected = await saveDialog(options);
-    if (selected) {
-      outputPath.value = selected;
-      errorMsg.value = "";
-      generatedOutputPath.value = "";
-    }
-  } catch (error) {
-    errorMsg.value = `选择保存位置失败：${error instanceof Error ? error.message : String(error)}`;
   }
 }
 
@@ -384,9 +473,6 @@ async function selectOutputDir() {
       selectedTemplate.value.updatedAt = new Date().toISOString();
       await saveConfig();
       successMsg.value = "输出目录设置成功！";
-      if (generatedOutputPath.value && outputPath.value.startsWith(dirPath) === false) {
-        generatedOutputPath.value = "";
-      }
     }
   } catch (error) {
     errorMsg.value = `选择输出目录失败：${error instanceof Error ? error.message : String(error)}`;
@@ -407,6 +493,173 @@ function updateDefaultValue(placeholder: string, value: string) {
     selectedTemplate.value.defaultValues[placeholder] = value;
     selectedTemplate.value.updatedAt = new Date().toISOString();
   }
+}
+
+// 判断字段是否为时间字段
+function isTimeField(placeholder: string): boolean {
+  if (!selectedTemplate.value?.timeFieldConfig) {
+    return false;
+  }
+  return !!selectedTemplate.value.timeFieldConfig[placeholder];
+}
+
+// 切换时间字段状态
+function toggleTimeField(placeholder: string, event: Event) {
+  const checkbox = event.target as HTMLInputElement;
+  
+  if (checkbox.checked) {
+    // 打开时间类型选择对话框
+    currentConfiguringField.value = placeholder;
+    selectedTimeType.value = selectedTemplate.value?.timeFieldConfig?.[placeholder] || "";
+    showTimeTypeDialog.value = true;
+  } else {
+    // 移除时间字段配置
+    if (selectedTemplate.value?.timeFieldConfig) {
+      delete selectedTemplate.value.timeFieldConfig[placeholder];
+      selectedTemplate.value.updatedAt = new Date().toISOString();
+      saveConfig();
+    }
+  }
+}
+
+// 确认时间类型选择
+function confirmTimeType() {
+  if (!selectedTemplate.value || !currentConfiguringField.value || !selectedTimeType.value) {
+    return;
+  }
+  
+  // 设置时间字段配置
+  if (!selectedTemplate.value.timeFieldConfig) {
+    selectedTemplate.value.timeFieldConfig = {};
+  }
+  selectedTemplate.value.timeFieldConfig[currentConfiguringField.value] = selectedTimeType.value;
+  
+  // 获取对应的占位符
+  const option = timeTypeOptions.find(opt => opt.value === selectedTimeType.value);
+  if (option) {
+    selectedTemplate.value.defaultValues[currentConfiguringField.value] = option.placeholder;
+  }
+  
+  selectedTemplate.value.updatedAt = new Date().toISOString();
+  saveConfig();
+  showTimeTypeDialog.value = false;
+}
+
+// 计算时间值（支持占位符替换）
+function calculateTimeValue(type: string): string {
+  const today = new Date();
+  const year = today.getFullYear();
+  const month = (today.getMonth() + 1).toString().padStart(2, '0');
+  const day = today.getDate().toString().padStart(2, '0');
+  
+  switch(type) {
+    case 'currentDate':
+      const dateFormat = selectedTemplate.value?.dateFormat || 'yyyy-MM-dd';
+      return dateFormat
+        .replace('yyyy', year.toString())
+        .replace('MM', month)
+        .replace('dd', day);
+    case 'currentDate.year':
+      return year.toString();
+    case 'currentDate.month':
+      return month;
+    case 'currentDate.day':
+      return day;
+    default:
+      return '';
+  }
+}
+
+// 替换时间占位符为实际值
+function replaceTimePlaceholders(value: string): string {
+  if (!value || !value.includes('{{执行时')) {
+    return value;
+  }
+  
+  const today = new Date();
+  const year = today.getFullYear();
+  const month = (today.getMonth() + 1).toString().padStart(2, '0');
+  const day = today.getDate().toString().padStart(2, '0');
+  
+  const dateFormat = selectedTemplate.value?.dateFormat || 'yyyy-MM-dd';
+  const formattedDate = dateFormat
+    .replace('yyyy', year.toString())
+    .replace('MM', month)
+    .replace('dd', day);
+  
+  return value
+    .replace(/{{执行时日期}}/g, formattedDate)
+    .replace(/{{执行时年}}/g, year.toString())
+    .replace(/{{执行时月}}/g, month)
+    .replace(/{{执行时日}}/g, day);
+}
+
+// 更新文件名模板
+function updateFilenameTemplate(template: string) {
+  if (selectedTemplate.value) {
+    selectedTemplate.value.filenameTemplate = template;
+    selectedTemplate.value.updatedAt = new Date().toISOString();
+  }
+}
+
+// 检查字段是否在文件名模板中
+function isFieldInFilename(field: string): boolean {
+  if (!selectedTemplate.value?.filenameTemplate) {
+    return false;
+  }
+  return selectedTemplate.value.filenameTemplate.includes(`{{${field}}}`);
+}
+
+// 切换字段是否在文件名模板中
+function toggleFieldInFilename(field: string, event: Event) {
+  if (!selectedTemplate.value) return;
+
+  const checkbox = event.target as HTMLInputElement;
+  const isChecked = checkbox.checked;
+
+  if (isChecked) {
+    if (!selectedTemplate.value.filenameTemplate) {
+      selectedTemplate.value.filenameTemplate = `{{${field}}}.docx`;
+    } else {
+      const docxIndex = selectedTemplate.value.filenameTemplate.indexOf('.docx');
+      if (docxIndex === -1) {
+        selectedTemplate.value.filenameTemplate += `{{${field}}}`;
+      } else {
+        selectedTemplate.value.filenameTemplate =
+          selectedTemplate.value.filenameTemplate.slice(0, docxIndex) +
+          `{{${field}}}` +
+          selectedTemplate.value.filenameTemplate.slice(docxIndex);
+      }
+    }
+  } else {
+    selectedTemplate.value.filenameTemplate =
+      selectedTemplate.value.filenameTemplate.replace(`{{${field}}}`, '').replace(/\.docx$/, '.docx');
+  }
+
+  selectedTemplate.value.updatedAt = new Date().toISOString();
+  saveConfig();
+}
+
+// 根据文件名模板和表单数据生成实际文件名
+function generateFilenameFromTemplate(template: string, data: Record<string, string>): string {
+  if (!template) {
+    return `output_${Date.now()}.docx`;
+  }
+  
+  let filename = template;
+  
+  // 替换所有 {{字段名}} 占位符
+  for (const [key, value] of Object.entries(data)) {
+    const placeholder = `{{${key}}}`;
+    filename = filename.replace(new RegExp(placeholder, 'g'), value || '');
+  }
+  
+  // 如果模板中没有 .docx 后缀，添加它
+  if (!filename.endsWith('.docx')) {
+    filename += '.docx';
+  }
+  
+  return filename;
 }
 
 // 保存模板配置
@@ -475,6 +728,15 @@ async function exportExcelTemplate() {
   }
 }
 
+// 处理生成文件按钮点击
+async function handleGenerate() {
+  if (functionMode.value === 'single') {
+    await generateDocument();
+  } else {
+    await generateBatchDocuments();
+  }
+}
+
 // 生成Word文件
 async function generateDocument() {
   try {
@@ -483,8 +745,9 @@ async function generateDocument() {
       return;
     }
 
-    if (!outputPath.value) {
-      errorMsg.value = "请先选择保存位置";
+    // 检查是否配置了输出目录
+    if (!selectedTemplate.value.outputDir) {
+      errorMsg.value = "请先在模板配置中设置默认输出目录";
       return;
     }
 
@@ -492,11 +755,21 @@ async function generateDocument() {
     errorMsg.value = "";
     successMsg.value = "";
 
+    // 替换时间占位符为实际值
+    const processedFormData: Record<string, string> = {};
+    for (const [key, value] of Object.entries(formData)) {
+      processedFormData[key] = replaceTimePlaceholders(value);
+    }
+
     // 获取Python可执行文件路径
     const pythonExecutable = await invoke<string>("get_python_executable");
     
     // 构建命令行参数
-    const dataJson = JSON.stringify(formData);
+    const dataJson = JSON.stringify(processedFormData);
+    
+    // 生成文件名
+    const filename = generateFilenameFromTemplate(selectedTemplate.value.filenameTemplate, formData);
+    const outputPath = `${selectedTemplate.value.outputDir}/${filename}`;
     
     // 我们需要获取 main.py 的绝对路径
     // 从 pythonExecutable 中推断
@@ -524,20 +797,20 @@ async function generateDocument() {
         }
     }
     
-    console.log("执行生成命令:", commandName, [mainPyPath, selectedTemplate.value.path, outputPath.value, "dataJson..."]);
+    console.log("执行生成命令:", commandName, [mainPyPath, selectedTemplate.value.path, outputPath, "dataJson..."]);
 
     // 调用Python程序
     const result = await Command.create(commandName, [
       mainPyPath,
       selectedTemplate.value.path, 
-      outputPath.value, 
+      outputPath, 
       dataJson,
       "fill"
     ]).execute();
     
     if (result.code === 0) {
-      successMsg.value = "文件生成成功！";
-      generatedOutputPath.value = outputPath.value;
+      successMsg.value = `文件生成成功！保存位置：${outputPath}`;
+      generatedOutputPath.value = outputPath;
     } else {
       errorMsg.value = `生成文件失败：${result.stderr || result.stdout}`;
     }
@@ -550,41 +823,20 @@ async function generateDocument() {
 
 // 打开生成的文件
 async function openGeneratedFile() {
-  const pathToOpen = generatedOutputPath.value || outputPath.value;
-  if (pathToOpen) {
+  if (generatedOutputPath.value) {
     try {
-      await openPath(pathToOpen);
+      await openPath(generatedOutputPath.value);
     } catch (error) {
       errorMsg.value = `打开文件失败：${error instanceof Error ? error.message : String(error)}`;
     }
   }
 }
 
-// 选择批量输出目录
-async function selectBatchOutputDir() {
-  try {
-    const options: OpenDialogOptions = {
-      title: "选择输出目录",
-      directory: true,
-      multiple: false,
-    };
-
-    const selected = await openDialog(options);
-    if (selected) {
-      const dirPath = Array.isArray(selected) ? selected[0] : selected;
-      batchOutputDir.value = dirPath;
-      errorMsg.value = "";
-    }
-  } catch (error) {
-    errorMsg.value = `选择输出目录失败：${error instanceof Error ? error.message : String(error)}`;
-  }
-}
-
 // 打开批量输出目录
 async function openBatchOutputDir() {
-  if (batchOutputDir.value) {
+  if (selectedTemplate.value?.outputDir) {
     try {
-      await openPath(batchOutputDir.value);
+      await openPath(selectedTemplate.value.outputDir);
     } catch (error) {
       errorMsg.value = `打开目录失败：${error instanceof Error ? error.message : String(error)}`;
     }
@@ -665,8 +917,9 @@ async function generateBatchDocuments() {
       return;
     }
 
-    if (!batchOutputDir.value) {
-      errorMsg.value = "请先选择输出目录";
+    // 检查是否配置了输出目录
+    if (!selectedTemplate.value.outputDir) {
+      errorMsg.value = "请先在模板配置中设置默认输出目录";
       return;
     }
 
@@ -713,17 +966,20 @@ async function generateBatchDocuments() {
     for (let i = 0; i < batchData.value.length; i++) {
       const rowData = batchData.value[i];
       
-      // 生成文件名
-      let filename = `output_${i+1}.docx`;
-      if (filenameField.value && rowData[filenameField.value]) {
-        filename = `${rowData[filenameField.value]}.docx`;
+      // 替换时间占位符为实际值
+      const processedRowData: Record<string, string> = {};
+      for (const [key, value] of Object.entries(rowData)) {
+        processedRowData[key] = replaceTimePlaceholders(value);
       }
       
+      // 使用文件名模板生成文件名
+      const filename = generateFilenameFromTemplate(selectedTemplate.value.filenameTemplate, processedRowData);
+      
       // 构建输出路径
-      const outputFilePath = `${batchOutputDir.value}/${filename}`;
+      const outputFilePath = `${selectedTemplate.value.outputDir}/${filename}`;
       
       // 构建命令行参数
-      const dataJson = JSON.stringify(rowData);
+      const dataJson = JSON.stringify(processedRowData);
       
       try {
         // 调用Python程序
@@ -750,7 +1006,7 @@ async function generateBatchDocuments() {
     successMsg.value = `批量生成完成！成功：${successCount} 个，失败：${failureCount} 个`;
     
     // 打开输出目录
-    await openPath(batchOutputDir.value);
+    await openPath(selectedTemplate.value.outputDir);
     
   } catch (error) {
     errorMsg.value = `批量生成失败：${error instanceof Error ? error.message : String(error)}`;
@@ -761,17 +1017,22 @@ async function generateBatchDocuments() {
 
 // 生命周期钩子
 onMounted(async () => {
+  console.log("========== 应用启动 ==========");
+  
   // 初始化配置文件路径
   try {
     const dataDir = await appDataDir();
-    CONFIG_FILE.value = `${dataDir}templates-config.json`;
-    console.log("配置文件路径:", CONFIG_FILE.value);
+    CONFIG_FILE.value = `${dataDir}/templates-config.json`;
+    console.log("应用数据目录：", dataDir);
+    console.log("配置文件路径：", CONFIG_FILE.value);
   } catch (error) {
     console.error("获取应用数据目录失败:", error);
   }
   
   // 加载保存的配置
-  loadConfig();
+  await loadConfig();
+  
+  console.log("========== 应用启动完成 ==========");
 });
 
 // 监听选中模板变化
@@ -833,7 +1094,7 @@ watch(selectedTemplateId, () => {
         @click="goToStep(2)"
       >
         <span class="step-index">2</span>
-        <span class="step-label">配置默认值</span>
+        <span class="step-label">填写数据</span>
       </button>
       <button
         class="step"
@@ -842,15 +1103,6 @@ watch(selectedTemplateId, () => {
         @click="goToStep(3)"
       >
         <span class="step-index">3</span>
-        <span class="step-label">填写数据</span>
-      </button>
-      <button
-        class="step"
-        :class="{ active: currentStep === 4 }"
-        :disabled="!canGoToStep(4)"
-        @click="goToStep(4)"
-      >
-        <span class="step-index">4</span>
         <span class="step-label">生成文件</span>
       </button>
     </nav>
@@ -886,10 +1138,10 @@ watch(selectedTemplateId, () => {
             </div>
           </div>
           <div class="template-row-actions" @click.stop>
-            <button class="primary" @click="selectedTemplateId = template.id; goToStep(3)">
+            <button class="primary" @click="selectedTemplateId = template.id; goToStep(2)">
               使用
             </button>
-            <button class="secondary" @click="selectedTemplateId = template.id; goToStep(2)">
+            <button class="secondary" @click="selectedTemplateId = template.id; showConfigDialog = true">
               配置
             </button>
             <button class="danger" @click="deleteTemplate(template.id)">
@@ -918,86 +1170,6 @@ watch(selectedTemplateId, () => {
     </section>
 
     <section class="card" v-else-if="currentStep === 2 && selectedTemplate">
-      <div class="card-header">
-        <h2>配置默认值</h2>
-        <p class="muted">设置模板名称、默认输出目录与默认填充值</p>
-      </div>
-
-      <div class="two-col">
-        <div class="panel">
-          <div class="form-item">
-            <label for="template-name">模板名称</label>
-            <input
-              id="template-name"
-              type="text"
-              v-model="selectedTemplate.name"
-              @input="updateTemplateName(selectedTemplate.name)"
-            />
-          </div>
-
-          <div class="form-item">
-            <label for="output-dir">默认输出目录</label>
-            <div class="file-selector">
-              <input
-                id="output-dir"
-                type="text"
-                v-model="selectedTemplate.outputDir"
-                readonly
-              />
-              <button @click="selectOutputDir" :disabled="isLoading">
-                浏览
-              </button>
-            </div>
-          </div>
-
-          <div class="hint">
-            <div class="hint-title">模板信息</div>
-            <div class="hint-body">
-              <div class="kv">
-                <span class="k">路径</span>
-                <span class="v">{{ selectedTemplate.path }}</span>
-              </div>
-              <div class="kv">
-                <span class="k">占位符</span>
-                <span class="v">{{ selectedTemplate.placeholders.length }} 个</span>
-              </div>
-            </div>
-          </div>
-        </div>
-
-        <div class="panel">
-          <h3 class="panel-title">默认值设置</h3>
-          <div class="form-grid">
-            <div
-              v-for="placeholder in selectedTemplate.placeholders"
-              :key="placeholder"
-              class="form-item"
-            >
-              <label :for="`default-${placeholder}`">{{ placeholder }}</label>
-              <input
-                :id="`default-${placeholder}`"
-                type="text"
-                v-model="selectedTemplate.defaultValues[placeholder]"
-                @input="updateDefaultValue(placeholder, selectedTemplate.defaultValues[placeholder])"
-                placeholder="设置默认值"
-              />
-            </div>
-          </div>
-        </div>
-      </div>
-
-      <div class="footer-actions">
-        <div class="left">
-          <button class="secondary" @click="prevStep" :disabled="isLoading">上一步</button>
-        </div>
-        <div class="right">
-          <button class="secondary" @click="saveTemplateConfig" :disabled="isLoading">保存配置</button>
-          <button class="primary" @click="nextStep" :disabled="isLoading || !canGoToStep(3)">下一步</button>
-        </div>
-      </div>
-    </section>
-
-    <section class="card" v-else-if="currentStep === 3 && placeholders.length > 0">
       <div class="card-header">
         <h2>{{ functionMode === 'single' ? '填写数据' : '批量处理配置' }}</h2>
         <p class="muted">
@@ -1087,7 +1259,6 @@ watch(selectedTemplateId, () => {
                     {{ placeholder }}
                   </option>
                 </select>
-                <p class="muted" style="margin-top: 5px;">生成的文件名将使用该字段的值</p>
               </div>
             </div>
           </div>
@@ -1099,53 +1270,22 @@ watch(selectedTemplateId, () => {
           <button class="secondary" @click="prevStep" :disabled="isLoading">上一步</button>
         </div>
         <div class="right">
-          <button class="primary" @click="nextStep" :disabled="isLoading || !canGoToStep(4)">下一步</button>
+          <button class="primary" @click="nextStep" :disabled="isLoading || !canGoToStep(3)">下一步</button>
         </div>
       </div>
     </section>
 
-    <section class="card" v-else-if="currentStep === 4 && placeholders.length > 0">
+    <section class="card" v-else-if="currentStep === 3 && placeholders.length > 0">
       <div class="card-header">
         <h2>{{ functionMode === 'single' ? '生成文件' : '批量生成' }}</h2>
         <p class="muted">
-          {{ functionMode === 'single' ? '选择保存位置，生成后可直接打开' : '选择输出目录，批量生成文件' }}
+          {{ functionMode === 'single' ? '文件将保存到模板配置的输出目录' : '文件将批量生成到模板配置的输出目录' }}
         </p>
       </div>
 
       <div class="panel">
-        <!-- 单文件模式：输出文件选择 -->
-        <div v-if="functionMode === 'single'" class="form-item">
-          <label>保存位置</label>
-          <div class="file-selector">
-            <input
-              type="text"
-              v-model="outputPath"
-              placeholder="请选择输出文件位置"
-              readonly
-            />
-            <button @click="selectOutput" :disabled="isLoading">
-              浏览
-            </button>
-          </div>
-        </div>
-
-        <!-- 批量模式：输出目录选择 -->
-        <div v-else-if="functionMode === 'batch'" class="batch-output-section">
-          <div class="form-item">
-            <label>输出目录</label>
-            <div class="file-selector">
-              <input
-                type="text"
-                v-model="batchOutputDir"
-                placeholder="请选择输出目录"
-                readonly
-              />
-              <button @click="selectBatchOutputDir" :disabled="isLoading">
-                浏览
-              </button>
-            </div>
-          </div>
-          
+        <!-- 批量模式：文件名设置 -->
+        <div v-if="functionMode === 'batch'" class="batch-output-section">
           <div class="form-item">
             <label>文件名设置</label>
             <div class="filename-info">
@@ -1162,8 +1302,8 @@ watch(selectedTemplateId, () => {
         <div class="action-buttons">
           <button
             class="primary"
-            @click="functionMode === 'single' ? generateDocument : generateBatchDocuments"
-            :disabled="isLoading || !selectedTemplate || (functionMode === 'single' && !outputPath) || (functionMode === 'batch' && !batchOutputDir) || (functionMode === 'batch' && batchData.length === 0)"
+            @click="handleGenerate"
+            :disabled="isLoading || !selectedTemplate || (functionMode === 'batch' && batchData.length === 0)"
           >
             <span v-if="isLoading">生成中...</span>
             <span v-else>
@@ -1180,7 +1320,7 @@ watch(selectedTemplateId, () => {
           <button
             v-else-if="functionMode === 'batch'"
             @click="openBatchOutputDir"
-            :disabled="isLoading || !batchOutputDir"
+            :disabled="isLoading || !selectedTemplate?.outputDir"
           >
             打开输出目录
           </button>
@@ -1196,6 +1336,193 @@ watch(selectedTemplateId, () => {
         </div>
       </div>
     </section>
+
+    <!-- 配置对话框 -->
+    <div v-if="showConfigDialog && selectedTemplate" class="dialog-overlay" @click.self="showConfigDialog = false">
+      <div class="dialog">
+        <div class="dialog-header">
+          <h2>配置模板</h2>
+          <button class="close-button" @click="showConfigDialog = false">&times;</button>
+        </div>
+        <div class="dialog-body">
+          <div class="form-item">
+            <label for="template-name">模板名称</label>
+            <input
+              id="template-name"
+              type="text"
+              v-model="selectedTemplate.name"
+              @input="updateTemplateName(selectedTemplate.name)"
+            />
+          </div>
+
+          <div class="form-item">
+            <label for="output-dir">默认输出目录</label>
+            <div class="file-selector">
+              <input
+                id="output-dir"
+                type="text"
+                v-model="selectedTemplate.outputDir"
+                readonly
+              />
+              <button @click="selectOutputDir" :disabled="isLoading">
+                浏览
+              </button>
+            </div>
+          </div>
+
+          <div class="form-item">
+            <label for="filename-template">文件名模板</label>
+            <input
+              id="filename-template"
+              type="text"
+              v-model="selectedTemplate.filenameTemplate"
+              placeholder="例如：&#123;&#123;授权方&#125;&#125;-授权书.docx"
+              @input="updateFilenameTemplate(selectedTemplate.filenameTemplate)"
+            />
+            <div class="field-selector">
+              <label class="field-selector-label">选择字段：</label>
+              <div class="checkbox-group">
+                <label
+                  v-for="placeholder in selectedTemplate.placeholders"
+                  :key="placeholder"
+                  class="checkbox-item"
+                >
+                  <input
+                    type="checkbox"
+                    :checked="isFieldInFilename(placeholder)"
+                    @change="toggleFieldInFilename(placeholder, $event)"
+                  />
+                  <span>{{ placeholder }}</span>
+                </label>
+              </div>
+            </div>
+            <div class="hint-text">
+              使用说明：选择字段后会自动生成 &#123;&#123;字段名&#125;&#125; 格式的占位符，生成文档时会用实际值替换。例如：&#123;&#123;授权方&#125;&#125;-授权书.docx
+            </div>
+          </div>
+
+          <div class="form-item">
+            <label for="date-format">日期格式</label>
+            <select
+              id="date-format"
+              class="form-select"
+              v-model="selectedTemplate.dateFormat"
+              @change="saveConfig"
+            >
+              <option
+                v-for="option in dateFormatOptions"
+                :key="option.value"
+                :value="option.value"
+              >
+                {{ option.label }} - {{ option.description }}
+              </option>
+            </select>
+            <div class="hint-text">
+              说明：此格式用于"当前日期"类型的时间字段，生成文档时会使用选定的格式显示日期。
+            </div>
+          </div>
+
+          <div class="hint">
+            <div class="hint-title">模板信息</div>
+            <div class="hint-body">
+              <div class="kv">
+                <span class="k">路径</span>
+                <span class="v">{{ selectedTemplate.path }}</span>
+              </div>
+              <div class="kv">
+                <span class="k">占位符</span>
+                <span class="v">{{ selectedTemplate.placeholders.length }} 个</span>
+              </div>
+            </div>
+          </div>
+
+          <div class="hint">
+            <div class="hint-title">时间字段配置说明</div>
+            <div class="hint-body">
+              <p>您可以为字段配置时间相关的默认值，系统会自动填充当前日期：</p>
+              <ul>
+                <li><strong>当前日期</strong>：自动填充完整日期，格式可在上方"日期格式"中配置</li>
+                <li><strong>当前年份</strong>：自动填充年份，如 2026</li>
+                <li><strong>当前月份</strong>：自动填充月份，如 01</li>
+                <li><strong>当前日期</strong>：自动填充日期，如 01</li>
+              </ul>
+              <p>使用模板时，这些字段会自动更新为当天的日期。</p>
+            </div>
+          </div>
+
+          <div class="panel">
+            <h3 class="panel-title">默认值设置</h3>
+            <div class="form-grid">
+              <div
+                v-for="placeholder in selectedTemplate.placeholders"
+                :key="placeholder"
+                class="form-item"
+              >
+                <label :for="`default-${placeholder}`">{{ placeholder }}</label>
+                <div class="default-value-container">
+                  <input
+                    :id="`default-${placeholder}`"
+                    type="text"
+                    v-model="selectedTemplate.defaultValues[placeholder]"
+                    @input="updateDefaultValue(placeholder, selectedTemplate.defaultValues[placeholder])"
+                    placeholder="设置默认值"
+                  />
+                  <label class="time-field-checkbox">
+                    <input
+                      type="checkbox"
+                      :checked="isTimeField(placeholder)"
+                      @change="toggleTimeField(placeholder, $event)"
+                    />
+                    <span>时间字段</span>
+                  </label>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+        <div class="dialog-footer">
+          <button class="secondary" @click="showConfigDialog = false">取消</button>
+          <button class="primary" @click="saveTemplateConfig; showConfigDialog = false">保存</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- 时间类型选择对话框 -->
+    <div v-if="showTimeTypeDialog" class="dialog-overlay" @click.self="showTimeTypeDialog = false">
+      <div class="dialog dialog-small">
+        <div class="dialog-header">
+          <h2>选择时间类型</h2>
+          <button class="close-button" @click="showTimeTypeDialog = false">&times;</button>
+        </div>
+        <div class="dialog-body">
+          <p class="field-info">当前字段：<strong>{{ currentConfiguringField }}</strong></p>
+          <div class="time-type-options">
+            <label
+              v-for="option in timeTypeOptions"
+              :key="option.value"
+              class="time-type-option"
+              :class="{ selected: selectedTimeType === option.value }"
+            >
+              <input
+                type="radio"
+                :value="option.value"
+                v-model="selectedTimeType"
+                :name="`time-type-${currentConfiguringField}`"
+              />
+              <div class="option-content">
+                <div class="option-title">{{ option.label }}</div>
+                <div class="option-desc">{{ option.description }}</div>
+                <div class="option-placeholder">占位符：{{ option.placeholder }}</div>
+              </div>
+            </label>
+          </div>
+        </div>
+        <div class="dialog-footer">
+          <button class="secondary" @click="showTimeTypeDialog = false">取消</button>
+          <button class="primary" @click="confirmTimeType">确定</button>
+        </div>
+      </div>
+    </div>
   </main>
 </template>
 
@@ -1796,6 +2123,496 @@ button:disabled {
 
   .template-row {
     grid-template-columns: 1fr;
+  }
+}
+
+/* 对话框样式优化 */
+.dialog-overlay {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background-color: rgba(0, 0, 0, 0.5);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 1000;
+}
+
+.dialog {
+  background-color: white;
+  border-radius: 16px;
+  box-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.25), 0 10px 10px -5px rgba(0, 0, 0, 0.04);
+  max-width: 900px;
+  width: 95%;
+  max-height: 90vh;
+  overflow-y: auto;
+}
+
+.dialog-header {
+  padding: 20px 24px;
+  border-bottom: 1px solid #e5e7eb;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.dialog-header h2 {
+  margin: 0;
+  font-size: 20px;
+  font-weight: 600;
+  color: #111827;
+}
+
+.close-button {
+  background: none;
+  border: none;
+  font-size: 24px;
+  cursor: pointer;
+  color: #6b7280;
+  padding: 0;
+  width: 36px;
+  height: 36px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 8px;
+  transition: background-color 0.2s;
+}
+
+.close-button:hover {
+  background-color: #f3f4f6;
+}
+
+.dialog-body {
+  padding: 24px;
+}
+
+.dialog-footer {
+  padding: 20px 24px;
+  border-top: 1px solid #e5e7eb;
+  display: flex;
+  justify-content: flex-end;
+  gap: 12px;
+}
+
+.field-selector {
+  margin-top: 12px;
+}
+
+.field-selector-label {
+  font-weight: 500;
+  color: #4b5563;
+  margin-bottom: 10px;
+  display: block;
+  font-size: 14px;
+}
+
+.checkbox-group {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+  gap: 12px;
+  margin-top: 10px;
+}
+
+.checkbox-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  cursor: pointer;
+  font-size: 0.95rem;
+  padding: 8px 12px;
+  border-radius: 8px;
+  transition: background-color 0.2s;
+}
+
+.checkbox-item:hover {
+  background-color: #f9fafb;
+}
+
+.checkbox-item input[type="checkbox"] {
+  width: 18px;
+  height: 18px;
+  accent-color: #396cd8;
+}
+
+.hint-text {
+  margin-top: 12px;
+  font-size: 0.875rem;
+  color: #6b7280;
+  background-color: #f9fafb;
+  padding: 12px;
+  border-radius: 8px;
+  border: 1px solid #e5e7eb;
+  line-height: 1.5;
+}
+
+/* 时间类型选择对话框 */
+.dialog-small {
+  max-width: 500px;
+}
+
+.field-info {
+  margin: 0 0 16px 0;
+  padding: 12px;
+  background-color: #f0f9ff;
+  border: 1px solid #bae6fd;
+  border-radius: 8px;
+  font-size: 14px;
+  color: #0369a1;
+  line-height: 1.5;
+}
+
+.field-info strong {
+  font-weight: 600;
+  color: #0c4a6e;
+}
+
+.time-type-options {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.time-type-option {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  padding: 14px 16px;
+  border: 2px solid #e5e7eb;
+  border-radius: 10px;
+  cursor: pointer;
+  transition: all 0.2s;
+  background-color: #ffffff;
+}
+
+.time-type-option:hover {
+  border-color: #93c5fd;
+  background-color: #f0f9ff;
+}
+
+.time-type-option.selected {
+  border-color: #396cd8;
+  background-color: #eff6ff;
+  box-shadow: 0 0 0 3px rgba(57, 108, 216, 0.1);
+}
+
+.time-type-option input[type="radio"] {
+  width: 20px;
+  height: 20px;
+  margin-top: 2px;
+  accent-color: #396cd8;
+  cursor: pointer;
+}
+
+.option-content {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.option-title {
+  font-weight: 600;
+  font-size: 15px;
+  color: #111827;
+}
+
+.option-desc {
+  font-size: 13px;
+  color: #6b7280;
+  line-height: 1.4;
+}
+
+.option-placeholder {
+  font-size: 12px;
+  color: #396cd8;
+  font-family: 'Monaco', 'Menlo', 'Ubuntu Mono', monospace;
+  background-color: #f0f9ff;
+  padding: 4px 8px;
+  border-radius: 4px;
+  display: inline-block;
+  margin-top: 4px;
+  font-weight: 500;
+}
+
+/* 表单样式优化 */
+.form-item {
+  margin-bottom: 20px;
+}
+
+.form-item label {
+  margin-bottom: 8px;
+  font-weight: 500;
+  color: #374151;
+  font-size: 14px;
+}
+
+.form-item input[type="text"] {
+  width: 100%;
+  padding: 10px 14px;
+  font-size: 14px;
+  border: 1px solid #d1d5db;
+  border-radius: 8px;
+  transition: border-color 0.2s, box-shadow 0.2s;
+  background-color: #ffffff;
+}
+
+.form-item input[type="text"]:focus {
+  outline: none;
+  border-color: #396cd8;
+  box-shadow: 0 0 0 3px rgba(57, 108, 216, 0.1);
+}
+
+.form-item select {
+  width: 100%;
+  padding: 10px 14px;
+  font-size: 14px;
+  border: 1px solid #d1d5db;
+  border-radius: 8px;
+  transition: border-color 0.2s, box-shadow 0.2s;
+  background-color: #ffffff;
+  cursor: pointer;
+}
+
+.form-item select:focus {
+  outline: none;
+  border-color: #396cd8;
+  box-shadow: 0 0 0 3px rgba(57, 108, 216, 0.1);
+}
+
+/* 时间字段容器 */
+.default-value-container {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+}
+
+.default-value-container input[type="text"] {
+  flex: 1;
+  padding: 10px 14px;
+  font-size: 14px;
+  border: 1px solid #d1d5db;
+  border-radius: 8px;
+  transition: border-color 0.2s, box-shadow 0.2s;
+  background-color: #ffffff;
+}
+
+.default-value-container input[type="text"]:focus {
+  outline: none;
+  border-color: #396cd8;
+  box-shadow: 0 0 0 3px rgba(57, 108, 216, 0.1);
+}
+
+.time-field-checkbox {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  cursor: pointer;
+  padding: 8px 12px;
+  border-radius: 8px;
+  background-color: #f9fafb;
+  border: 1px solid #e5e7eb;
+  transition: all 0.2s;
+  font-size: 13px;
+  font-weight: 500;
+  color: #4b5563;
+  user-select: none;
+}
+
+.time-field-checkbox:hover {
+  background-color: #f3f4f6;
+  border-color: #d1d5db;
+}
+
+.time-field-checkbox input[type="checkbox"] {
+  width: 18px;
+  height: 18px;
+  accent-color: #396cd8;
+  cursor: pointer;
+}
+
+.time-field-checkbox span {
+  white-space: nowrap;
+}
+
+.file-selector {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+}
+
+.file-selector input[type="text"] {
+  flex: 1;
+  background-color: #f9fafb;
+  border-color: #e5e7eb;
+}
+
+/* 模板信息面板 */
+.hint {
+  margin-top: 20px;
+  border-radius: 12px;
+  padding: 16px;
+  background: rgba(255, 255, 255, 0.95);
+  border: 1px solid #e5e7eb;
+}
+
+.hint-title {
+  font-weight: 600;
+  color: #111827;
+  font-size: 14px;
+  margin-bottom: 12px;
+}
+
+.hint-body {
+  display: grid;
+  gap: 10px;
+}
+
+.hint-body p {
+  margin: 0;
+  color: #4b5563;
+  font-size: 13px;
+  line-height: 1.6;
+}
+
+.hint-body ul {
+  margin: 8px 0 0 0;
+  padding-left: 20px;
+  color: #4b5563;
+  font-size: 13px;
+  line-height: 1.8;
+}
+
+.hint-body li {
+  margin-bottom: 4px;
+}
+
+.hint-body strong {
+  color: #111827;
+  font-weight: 600;
+}
+
+.kv {
+  display: grid;
+  grid-template-columns: 60px 1fr;
+  gap: 12px;
+  align-items: center;
+}
+
+.k {
+  color: #6b7280;
+  font-size: 13px;
+  font-weight: 500;
+}
+
+.v {
+  color: #111827;
+  font-size: 13px;
+  word-break: break-all;
+}
+
+/* 默认值设置面板 */
+.panel {
+  margin-top: 20px;
+  background: rgba(249, 250, 251, 0.95);
+  border: 1px solid #e5e7eb;
+  border-radius: 12px;
+  padding: 16px;
+}
+
+.panel-title {
+  margin: 0 0 16px 0;
+  font-size: 16px;
+  font-weight: 600;
+  color: #111827;
+}
+
+/* 按钮样式优化 */
+.dialog-footer button {
+  padding: 10px 20px;
+  font-size: 14px;
+  font-weight: 500;
+  border-radius: 8px;
+  transition: all 0.2s;
+}
+
+.dialog-footer button.primary {
+  background-color: #396cd8;
+  color: white;
+  border: 1px solid #396cd8;
+}
+
+.dialog-footer button.primary:hover {
+  background-color: #2d53a5;
+  border-color: #2d53a5;
+}
+
+.dialog-footer button.secondary {
+  background-color: #ffffff;
+  color: #374151;
+  border: 1px solid #d1d5db;
+}
+
+.dialog-footer button.secondary:hover {
+  background-color: #f9fafb;
+  border-color: #396cd8;
+}
+
+/* 适配移动端 */
+@media (max-width: 768px) {
+  .dialog {
+    width: 98%;
+    max-height: 95vh;
+  }
+  
+  .dialog-small {
+    max-width: 98%;
+  }
+  
+  .dialog-body {
+    padding: 16px;
+  }
+  
+  .checkbox-group {
+    grid-template-columns: 1fr;
+  }
+  
+  .file-selector {
+    flex-direction: column;
+    gap: 8px;
+  }
+  
+  .file-selector input[type="text"] {
+    width: 100%;
+  }
+  
+  .time-type-option {
+    padding: 12px 14px;
+  }
+  
+  .option-title {
+    font-size: 14px;
+  }
+  
+  .option-desc {
+    font-size: 12px;
+  }
+  
+  .option-placeholder {
+    font-size: 11px;
+    padding: 3px 6px;
+  }
+  
+  .default-value-container {
+    flex-direction: column;
+    align-items: stretch;
+  }
+  
+  .time-field-checkbox {
+    width: 100%;
+    justify-content: center;
   }
 }
 </style>
