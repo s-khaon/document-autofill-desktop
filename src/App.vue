@@ -4,6 +4,7 @@ import { invoke } from "@tauri-apps/api/core";
 import {
   open as openDialog,
   save as saveDialog,
+  confirm,
   type OpenDialogOptions,
   type SaveDialogOptions,
 } from "@tauri-apps/plugin-dialog";
@@ -32,7 +33,7 @@ const isLoading = ref<boolean>(false);
 const errorMsg = ref<string>("");
 const successMsg = ref<string>("");
 const selectedTemplateId = ref<string>("");
-const currentStep = ref<1 | 2 | 3>(1);
+const currentStep = ref<1 | 2>(1);
 const generatedOutputPath = ref<string>("");
 const hasEditedForm = ref<boolean>(false);
 const showConfigDialog = ref<boolean>(false);
@@ -128,13 +129,13 @@ const placeholders = computed(() => {
 const canGoStep2 = computed(() => !!selectedTemplate.value);
 const canGoStep3 = computed(() => !!selectedTemplate.value && placeholders.value.length > 0);
 
-function canGoToStep(step: 1 | 2 | 3) {
+function canGoToStep(step: 1 | 2) {
   if (step === 1) return true;
   if (step === 2) return canGoStep2.value;
-  return canGoStep3.value;
+  return false;
 }
 
-async function goToStep(step: 1 | 2 | 3) {
+async function goToStep(step: 1 | 2) {
   if (!canGoToStep(step)) return;
 
   currentStep.value = step;
@@ -146,13 +147,11 @@ async function nextStep() {
     return;
   }
   if (currentStep.value === 2) {
+    // 第二步直接生成文件
     if (!hasEditedForm.value) updateFormData();
     await saveConfig();
-    await goToStep(3);
+    await handleGenerate();
     return;
-  }
-  if (currentStep.value === 3) {
-    await goToStep(4);
   }
 }
 
@@ -160,13 +159,6 @@ async function prevStep() {
   if (currentStep.value === 2) {
     await goToStep(1);
     return;
-  }
-  if (currentStep.value === 3) {
-    await goToStep(1); // 从步骤3返回时回到步骤1，跳过步骤2
-    return;
-  }
-  if (currentStep.value === 4) {
-    await goToStep(3);
   }
 }
 
@@ -303,10 +295,6 @@ async function addTemplate() {
         path: templatePath,
         placeholders: placeholders,
         defaultValues: {
-          // 设置默认日期
-          ...(placeholders.includes("年份") && { "年份": currentYear }),
-          ...(placeholders.includes("月份") && { "月份": currentMonth }),
-          ...(placeholders.includes("日") && { "日": currentDay }),
         },
         outputDir: "",
         filenameTemplate: "",
@@ -339,7 +327,13 @@ async function addTemplate() {
 
 // 删除模板
 async function deleteTemplate(templateId: string) {
-  if (confirm("确定要删除这个模板吗？")) {
+  // 使用 Tauri confirm 函数的正确格式
+  const confirmed = await confirm(
+    "确定要删除这个模板吗？",
+    "删除确认"
+  );
+  
+  if (confirmed) {
     templates.value = templates.value.filter(t => t.id !== templateId);
     if (selectedTemplateId.value === templateId) {
       selectedTemplateId.value = templates.value[0]?.id || "";
@@ -745,10 +739,13 @@ async function generateDocument() {
       return;
     }
 
-    // 检查是否配置了输出目录
+    // 检查是否配置了输出目录，如果没有则让用户选择
     if (!selectedTemplate.value.outputDir) {
-      errorMsg.value = "请先在模板配置中设置默认输出目录";
-      return;
+      await selectOutputDir();
+      // 如果用户取消了目录选择，则返回
+      if (!selectedTemplate.value.outputDir) {
+        return;
+      }
     }
 
     isLoading.value = true;
@@ -917,10 +914,13 @@ async function generateBatchDocuments() {
       return;
     }
 
-    // 检查是否配置了输出目录
+    // 检查是否配置了输出目录，如果没有则让用户选择
     if (!selectedTemplate.value.outputDir) {
-      errorMsg.value = "请先在模板配置中设置默认输出目录";
-      return;
+      await selectOutputDir();
+      // 如果用户取消了目录选择，则返回
+      if (!selectedTemplate.value.outputDir) {
+        return;
+      }
     }
 
     if (batchData.value.length === 0) {
@@ -1072,7 +1072,7 @@ watch(selectedTemplateId, () => {
             批量生成
           </label>
         </div>
-        <button @click="addTemplate" :disabled="isLoading" class="secondary">
+        <button @click="addTemplate" :disabled="isLoading" class="special">
           添加模板
         </button>
       </div>
@@ -1096,21 +1096,22 @@ watch(selectedTemplateId, () => {
         <span class="step-index">2</span>
         <span class="step-label">填写数据</span>
       </button>
-      <button
-        class="step"
-        :class="{ active: currentStep === 3 }"
-        :disabled="!canGoToStep(3)"
-        @click="goToStep(3)"
-      >
-        <span class="step-index">3</span>
-        <span class="step-label">生成文件</span>
-      </button>
     </nav>
 
     <!-- 错误信息 -->
     <div v-if="errorMsg" class="message error">{{ errorMsg }}</div>
     <!-- 成功信息 -->
-    <div v-if="successMsg" class="message success">{{ successMsg }}</div>
+    <div v-if="successMsg" class="message success">
+      <span>{{ successMsg }}</span>
+      <button
+        v-if="generatedOutputPath"
+        @click="openGeneratedFile"
+        class="secondary small"
+        style="margin-left: 10px;"
+      >
+        打开文件
+      </button>
+    </div>
 
     <section class="card" v-if="currentStep === 1">
       <div class="card-header">
@@ -1270,72 +1271,19 @@ watch(selectedTemplateId, () => {
           <button class="secondary" @click="prevStep" :disabled="isLoading">上一步</button>
         </div>
         <div class="right">
-          <button class="primary" @click="nextStep" :disabled="isLoading || !canGoToStep(3)">下一步</button>
+          <button 
+            class="primary" 
+            @click="nextStep" 
+            :disabled="isLoading || !canGoToStep(2)"
+            style="background-color: #10b981; border-color: #10b981;"
+          >
+            生成文件
+          </button>
         </div>
       </div>
     </section>
 
-    <section class="card" v-else-if="currentStep === 3 && placeholders.length > 0">
-      <div class="card-header">
-        <h2>{{ functionMode === 'single' ? '生成文件' : '批量生成' }}</h2>
-        <p class="muted">
-          {{ functionMode === 'single' ? '文件将保存到模板配置的输出目录' : '文件将批量生成到模板配置的输出目录' }}
-        </p>
-      </div>
 
-      <div class="panel">
-        <!-- 批量模式：文件名设置 -->
-        <div v-if="functionMode === 'batch'" class="batch-output-section">
-          <div class="form-item">
-            <label>文件名设置</label>
-            <div class="filename-info">
-              <p>文件名规则：{{ filenameField ? `[${filenameField}]` : '默认文件名' }}.docx</p>
-              <p v-if="!filenameField" class="warning">注意：请选择作为文件名的字段，否则将使用默认文件名</p>
-            </div>
-          </div>
-          
-          <div class="batch-summary">
-            <p>预计生成：{{ batchData.length }} 个文件</p>
-          </div>
-        </div>
-
-        <div class="action-buttons">
-          <button
-            class="primary"
-            @click="handleGenerate"
-            :disabled="isLoading || !selectedTemplate || (functionMode === 'batch' && batchData.length === 0)"
-          >
-            <span v-if="isLoading">生成中...</span>
-            <span v-else>
-              {{ functionMode === 'single' ? '生成文件' : '批量生成' }}
-            </span>
-          </button>
-          <button
-            v-if="functionMode === 'single'"
-            @click="openGeneratedFile"
-            :disabled="isLoading || !generatedOutputPath"
-          >
-            打开文件
-          </button>
-          <button
-            v-else-if="functionMode === 'batch'"
-            @click="openBatchOutputDir"
-            :disabled="isLoading || !selectedTemplate?.outputDir"
-          >
-            打开输出目录
-          </button>
-        </div>
-      </div>
-
-      <div class="footer-actions">
-        <div class="left">
-          <button class="secondary" @click="prevStep" :disabled="isLoading">上一步</button>
-        </div>
-        <div class="right">
-          <button class="secondary" @click="goToStep(1)" :disabled="isLoading">重新选择模板</button>
-        </div>
-      </div>
-    </section>
 
     <!-- 配置对话框 -->
     <div v-if="showConfigDialog && selectedTemplate" class="dialog-overlay" @click.self="showConfigDialog = false">
@@ -1883,39 +1831,54 @@ watch(selectedTemplateId, () => {
   color: #555;
 }
 
+.form-item input {
+  width: 100%;
+  max-width: 100%;
+  padding: 0.6em 1.2em;
+  font-size: 1em;
+  font-weight: 500;
+  font-family: inherit;
+  color: #0f0f0f;
+  background-color: #ffffff;
+  border: 1px solid rgba(229, 231, 235, 0.9);
+  border-radius: 8px;
+  transition: border-color 0.25s;
+  box-shadow: 0 2px 2px rgba(0, 0, 0, 0.2);
+  outline: none;
+  box-sizing: border-box;
+}
+
+.form-item input:focus {
+  border-color: #396cd8;
+}
+
 .action-buttons {
   display: flex;
   gap: 1rem;
 }
 
-.action-buttons button.primary {
-  background-color: #396cd8;
-  color: white;
+/* action-buttons中的按钮继承全局样式 */
+.action-buttons button {
+  border-radius: 8px;
 }
 
-.action-buttons button.primary:hover {
-  background-color: #2d53a5;
-  border-color: #2d53a5;
+/* 确保.action-buttons中的按钮使用全局定义的样式 */
+.action-buttons button.primary,
+.action-buttons button.secondary,
+.action-buttons button.danger,
+.action-buttons button.success,
+.action-buttons button.special {
+  background-color: inherit;
+  color: inherit;
+  border-color: inherit;
 }
 
-.action-buttons button.secondary {
-  background-color: #e0e0e0;
-  color: #333;
-}
-
-.action-buttons button.secondary:hover {
-  background-color: #d0d0d0;
-  border-color: #396cd8;
-}
-
-.action-buttons button.danger {
-  background-color: #f44336;
-  color: white;
-}
-
-.action-buttons button.danger:hover {
-  background-color: #d32f2f;
-  border-color: #d32f2f;
+.action-buttons button.primary:hover,
+.action-buttons button.danger:hover,
+.action-buttons button.success:hover,
+.action-buttons button.special:hover {
+  transform: translateY(-1px);
+  box-shadow: inherit;
 }
 
 .message {
@@ -2013,16 +1976,85 @@ watch(selectedTemplateId, () => {
 
 button {
   padding: 0.5rem 1rem;
-  border: none;
-  border-radius: 4px;
+  border: 1px solid transparent;
+  border-radius: 8px;
   cursor: pointer;
   font-size: 0.9rem;
+  font-weight: 500;
   transition: all 0.2s ease;
 }
 
 button:disabled {
   opacity: 0.6;
   cursor: not-allowed;
+}
+
+/* 主要操作按钮 - 蓝色（用于核心功能，如生成文件、下一步） */
+button.primary {
+  background-color: #3b82f6;
+  color: white;
+  border-color: #3b82f6;
+}
+
+button.primary:hover:not(:disabled) {
+  background-color: #2563eb;
+  border-color: #2563eb;
+  transform: translateY(-1px);
+  box-shadow: 0 4px 12px rgba(59, 130, 246, 0.3);
+}
+
+/* 次要操作按钮 - 灰色（用于辅助功能，如上一步、取消、浏览） */
+button.secondary {
+  background-color: #f3f4f6;
+  color: #374151;
+  border-color: #e5e7eb;
+}
+
+button.secondary:hover:not(:disabled) {
+  background-color: #e5e7eb;
+  border-color: #d1d5db;
+}
+
+/* 危险按钮 - 红色（用于删除、清除等危险操作） */
+button.danger {
+  background-color: #ef4444;
+  color: white;
+  border-color: #ef4444;
+}
+
+button.danger:hover:not(:disabled) {
+  background-color: #dc2626;
+  border-color: #dc2626;
+  transform: translateY(-1px);
+  box-shadow: 0 4px 12px rgba(239, 68, 68, 0.3);
+}
+
+/* 成功按钮 - 绿色（用于成功相关操作，如生成文件成功后的打开文件） */
+button.success {
+  background-color: #10b981;
+  color: white;
+  border-color: #10b981;
+}
+
+button.success:hover:not(:disabled) {
+  background-color: #059669;
+  border-color: #059669;
+  transform: translateY(-1px);
+  box-shadow: 0 4px 12px rgba(16, 185, 129, 0.3);
+}
+
+/* 特殊功能按钮 - 紫色（用于添加模板等特殊操作） */
+button.special {
+  background-color: #8b5cf6;
+  color: white;
+  border-color: #8b5cf6;
+}
+
+button.special:hover:not(:disabled) {
+  background-color: #7c3aed;
+  border-color: #7c3aed;
+  transform: translateY(-1px);
+  box-shadow: 0 4px 12px rgba(139, 92, 246, 0.3);
 }
 
 .pill {
