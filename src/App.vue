@@ -10,7 +10,7 @@ import {
 } from "@tauri-apps/plugin-dialog";
 import { Command } from "@tauri-apps/plugin-shell";
 import { openPath } from "@tauri-apps/plugin-opener";
-import { exists, readTextFile, writeTextFile, mkdir } from "@tauri-apps/plugin-fs";
+import { exists, readTextFile, writeFile, mkdir, create, readFile, writeTextFile } from "@tauri-apps/plugin-fs";
 import { appDataDir } from "@tauri-apps/api/path";
 
 // 模板配置数据结构
@@ -37,6 +37,9 @@ const currentStep = ref<1 | 2>(1);
 const generatedOutputPath = ref<string>("");
 const hasEditedForm = ref<boolean>(false);
 const showConfigDialog = ref<boolean>(false);
+
+// 批量生成结果列表
+const batchGeneratedFiles = ref<string[]>([]);
 
 // 时间类型选择对话框
 const showTimeTypeDialog = ref<boolean>(false);
@@ -283,16 +286,41 @@ async function addTemplate() {
 
     const selected = await openDialog(options);
     if (selected) {
-      const templatePath = Array.isArray(selected) ? selected[0] : selected;
+      const originalPath = Array.isArray(selected) ? selected[0] : selected;
       
-      // 提取模板中的占位符
-      const placeholders = await extractPlaceholdersFromTemplate(templatePath);
+      // 获取应用数据目录，用于存储复制的模板
+      const dataDir = await appDataDir();
+      const templatesDir = `${dataDir}/templates`;
+      
+      // 确保模板目录存在
+      try {
+        const dirExists = await exists(templatesDir);
+        if (!dirExists) {
+          await mkdir(templatesDir, { recursive: true });
+        }
+      } catch (mkdirError) {
+        console.error("创建模板目录失败：", mkdirError);
+        throw mkdirError;
+      }
+      
+      // 生成模板文件名和路径
+      const templateFilename = `${Date.now()}_${originalPath.split("/").pop() || "template.docx"}`;
+      const copiedPath = `${templatesDir}/${templateFilename}`;
+      
+      // 复制模板文件到应用数据目录
+      await invoke("copy_file", {
+        source: originalPath,
+        destination: copiedPath
+      });
+      
+      // 提取模板中的占位符（使用复制后的路径）
+      const placeholders = await extractPlaceholdersFromTemplate(copiedPath);
       
       // 创建新的模板配置
       const newTemplate: TemplateConfig = {
         id: `template-${Date.now()}`,
-        name: templatePath.split("/").pop() || "新模板",
-        path: templatePath,
+        name: originalPath.split("/").pop() || "新模板",
+        path: copiedPath, // 使用复制后的路径
         placeholders: placeholders,
         defaultValues: {
         },
@@ -478,6 +506,8 @@ function updateTemplateName(newName: string) {
   if (selectedTemplate.value) {
     selectedTemplate.value.name = newName;
     selectedTemplate.value.updatedAt = new Date().toISOString();
+    // 立即保存配置，确保模板名称持久化
+    saveConfig();
   }
 }
 
@@ -486,6 +516,8 @@ function updateDefaultValue(placeholder: string, value: string) {
   if (selectedTemplate.value) {
     selectedTemplate.value.defaultValues[placeholder] = value;
     selectedTemplate.value.updatedAt = new Date().toISOString();
+    // 立即保存配置，确保默认值持久化
+    saveConfig();
   }
 }
 
@@ -512,6 +544,9 @@ function toggleTimeField(placeholder: string, event: Event) {
       delete selectedTemplate.value.timeFieldConfig[placeholder];
       selectedTemplate.value.updatedAt = new Date().toISOString();
       saveConfig();
+      
+      // 立即更新表单数据，确保配置生效
+      updateFormData();
     }
   }
 }
@@ -537,6 +572,9 @@ function confirmTimeType() {
   selectedTemplate.value.updatedAt = new Date().toISOString();
   saveConfig();
   showTimeTypeDialog.value = false;
+  
+  // 立即更新表单数据，确保配置生效
+  updateFormData();
 }
 
 // 计算时间值（支持占位符替换）
@@ -565,9 +603,10 @@ function calculateTimeValue(type: string): string {
 }
 
 // 替换时间占位符为实际值
-function replaceTimePlaceholders(value: string): string {
-  if (!value || !value.includes('{{执行时')) {
-    return value;
+function replaceTimePlaceholders(value: any): string {
+  const strValue = String(value || '');
+  if (!strValue.includes('{{执行时')) {
+    return strValue;
   }
   
   const today = new Date();
@@ -581,7 +620,7 @@ function replaceTimePlaceholders(value: string): string {
     .replace('MM', month)
     .replace('dd', day);
   
-  return value
+  return strValue
     .replace(/{{执行时日期}}/g, formattedDate)
     .replace(/{{执行时年}}/g, year.toString())
     .replace(/{{执行时月}}/g, month)
@@ -593,6 +632,8 @@ function updateFilenameTemplate(template: string) {
   if (selectedTemplate.value) {
     selectedTemplate.value.filenameTemplate = template;
     selectedTemplate.value.updatedAt = new Date().toISOString();
+    // 立即保存配置，确保文件名模板持久化
+    saveConfig();
   }
 }
 
@@ -672,13 +713,13 @@ async function exportExcelTemplate() {
       return;
     }
 
-    const { utils, writeFile } = await import('xlsx');
+    const { utils, write } = await import('xlsx');
     
     // 创建工作表数据
     const headers = selectedTemplate.value.placeholders;
     const worksheetData = [headers];
     
-    // 创建工作簿
+    // 创建工作簿和工作表
     const workbook = utils.book_new();
     const worksheet = utils.aoa_to_sheet(worksheetData);
     
@@ -702,16 +743,13 @@ async function exportExcelTemplate() {
       // 生成Excel文件
       isLoading.value = true;
       
-      // 使用xlsx库写入文件
-      // 注意：writeFile函数在浏览器环境中会直接下载，但在Tauri中需要特殊处理
-      // 我们需要先将工作簿转换为二进制数据，然后使用fs写入文件
-      const excelData = writeFile(workbook, selected, {
-        bookType: "xlsx",
-        type: "buffer"
-      });
+      // 使用xlsx库生成Excel数据
+      const excelBuffer = write(workbook, { bookType: 'xlsx', type: 'array' });
       
-      // 使用Tauri的fs API写入文件
-      await writeTextFile(selected, new TextDecoder().decode(excelData as ArrayBuffer));
+      // 使用Tauri的fs API写入二进制文件
+      const file = await create(selected);
+      await file.write(excelBuffer);
+      await file.close();
       
       successMsg.value = `Excel模板导出成功！保存位置：${selected}`;
     }
@@ -829,6 +867,15 @@ async function openGeneratedFile() {
   }
 }
 
+// 打开批量生成的文件
+async function openBatchFile(filePath: string) {
+  try {
+    await openPath(filePath);
+  } catch (error) {
+    errorMsg.value = `打开文件失败：${error instanceof Error ? error.message : String(error)}`;
+  }
+}
+
 // 打开批量输出目录
 async function openBatchOutputDir() {
   if (selectedTemplate.value?.outputDir) {
@@ -867,11 +914,11 @@ async function importExcelData() {
       
       const { read, utils } = await import('xlsx');
       
-      // 读取文件内容
-      const fileContent = await readTextFile(filePath);
+      // 使用Tauri的fs API读取二进制文件
+      const fileContent = await readFile(filePath);
       
       // 解析Excel文件
-      const workbook = read(new Uint8Array(Array.from(fileContent).map(char => char.charCodeAt(0))), {
+      const workbook = read(fileContent, {
         type: 'array'
       });
       
@@ -879,16 +926,46 @@ async function importExcelData() {
       const worksheetName = workbook.SheetNames[0];
       const worksheet = workbook.Sheets[worksheetName];
       
-      // 转换为JSON格式
-      const jsonData = utils.sheet_to_json(worksheet, {
-        header: selectedTemplate.value.placeholders
+      // 先获取Excel的实际列名（第一行）
+      const range = utils.decode_range(worksheet['!ref'] || 'A1');
+      const excelHeaders: string[] = [];
+      for (let col = range.s.c; col <= range.e.c; col++) {
+        const cellAddress = utils.encode_cell({ r: 0, c: col });
+        const cell = worksheet[cellAddress];
+        excelHeaders.push(cell ? String(cell.v) : `列${col + 1}`);
+      }
+      
+      // 创建占位符到Excel列名的映射
+      const placeholderToHeader: Record<string, string> = {};
+      selectedTemplate.value.placeholders.forEach(placeholder => {
+        // 查找匹配的列名（精确匹配或部分匹配）
+        const matchingHeader = excelHeaders.find(h => h === placeholder);
+        if (matchingHeader) {
+          placeholderToHeader[placeholder] = matchingHeader;
+        }
       });
       
-      // 过滤掉标题行（如果有）
-      batchData.value = jsonData.filter((row: any, index: number) => {
+      // 转换为JSON格式，使用Excel实际列名
+      const jsonData = utils.sheet_to_json(worksheet, {
+        header: excelHeaders,
+        range: 1 // 跳过第一行（表头行）
+      });
+      
+      // 重新映射列名，将Excel列名转换为占位符
+      batchData.value = jsonData.map((row: any) => {
+        const mappedRow: Record<string, any> = {};
+        selectedTemplate.value.placeholders.forEach(placeholder => {
+          const excelHeader = placeholderToHeader[placeholder];
+          if (excelHeader && row[excelHeader] !== undefined) {
+            mappedRow[placeholder] = row[excelHeader];
+          } else {
+            mappedRow[placeholder] = "";
+          }
+        });
+        return mappedRow;
+      }).filter((row: any, index: number) => {
         // 检查第一行是否为标题行
         if (index === 0 && selectedTemplate.value) {
-          // 如果第一行的第一个单元格等于第一个标题，则认为是标题行，过滤掉
           const firstCell = row[selectedTemplate.value.placeholders[0]];
           return firstCell !== selectedTemplate.value.placeholders[0];
         }
@@ -963,8 +1040,14 @@ async function generateBatchDocuments() {
     let successCount = 0;
     let failureCount = 0;
     
+    console.log("开始批量生成，共", batchData.value.length, "条记录");
+    console.log("输出目录:", selectedTemplate.value.outputDir);
+    console.log("文件名模板:", selectedTemplate.value.filenameTemplate);
+    
     for (let i = 0; i < batchData.value.length; i++) {
       const rowData = batchData.value[i];
+      
+      console.log("处理第", i+1, "条数据:", rowData);
       
       // 替换时间占位符为实际值
       const processedRowData: Record<string, string> = {};
@@ -974,15 +1057,18 @@ async function generateBatchDocuments() {
       
       // 使用文件名模板生成文件名
       const filename = generateFilenameFromTemplate(selectedTemplate.value.filenameTemplate, processedRowData);
+      console.log("生成文件名:", filename);
       
       // 构建输出路径
       const outputFilePath = `${selectedTemplate.value.outputDir}/${filename}`;
+      console.log("输出路径:", outputFilePath);
       
       // 构建命令行参数
       const dataJson = JSON.stringify(processedRowData);
       
       try {
         // 调用Python程序
+        console.log("调用Python生成文件...");
         const result = await Command.create(commandName, [
           mainPyPath,
           selectedTemplate.value.path, 
@@ -991,22 +1077,29 @@ async function generateBatchDocuments() {
           "fill"
         ]).execute();
         
+        console.log("Python返回结果:", result.code, result.stderr);
+        
         if (result.code === 0) {
           successCount++;
+          batchGeneratedFiles.value.push(outputFilePath);
+          console.log("文件生成成功:", outputFilePath);
         } else {
           failureCount++;
           console.error(`生成文件失败 (${i+1}/${batchData.value.length})：${result.stderr || result.stdout}`);
         }
       } catch (error) {
         failureCount++;
-        console.error(`生成文件失败 (${i+1}/${batchData.value.length})：${error instanceof Error ? error.message : String(error)}`);
+        console.error(`生成文件异常 (${i+1}/${batchData.value.length})：${error instanceof Error ? error.message : String(error)}`);
       }
     }
     
-    successMsg.value = `批量生成完成！成功：${successCount} 个，失败：${failureCount} 个`;
+    console.log("批量生成完成，成功:", successCount, "失败:", failureCount);
     
-    // 打开输出目录
-    await openPath(selectedTemplate.value.outputDir);
+    if (successCount > 0) {
+      successMsg.value = `批量生成完成！成功：${successCount} 个，失败：${failureCount} 个`;
+    } else if (failureCount > 0) {
+      errorMsg.value = `批量生成失败！请检查模板配置或Python环境`;
+    }
     
   } catch (error) {
     errorMsg.value = `批量生成失败：${error instanceof Error ? error.message : String(error)}`;
@@ -1040,6 +1133,7 @@ watch(selectedTemplateId, () => {
   updateFormData();
   hasEditedForm.value = false;
   generatedOutputPath.value = "";
+  batchGeneratedFiles.value = [];
   currentStep.value = 1;
 });
 </script>
@@ -1244,23 +1338,20 @@ watch(selectedTemplateId, () => {
                 暂无数据，请先导入Excel文件
               </div>
             </div>
-            
-            <div class="batch-action-group">
-              <h4>3. 文件名设置</h4>
-              <div class="form-item">
-                <label for="filename-field">选择作为文件名的字段</label>
-                <select 
-                  id="filename-field" 
-                  v-model="filenameField" 
-                  :disabled="isLoading || batchData.length === 0"
-                  class="form-select"
-                >
-                  <option value="">请选择...</option>
-                  <option v-for="placeholder in placeholders" :key="placeholder" :value="placeholder">
-                    {{ placeholder }}
-                  </option>
-                </select>
-              </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- 批量生成结果列表 -->
+      <div v-if="batchGeneratedFiles.length > 0" class="batch-result-section">
+        <div class="panel">
+          <h3 class="panel-title">生成结果</h3>
+          <div class="generated-files-list">
+            <div v-for="(filePath, index) in batchGeneratedFiles" :key="index" class="generated-file-item">
+              <span class="file-name">{{ filePath }}</span>
+              <button class="secondary" @click="openBatchFile(filePath)" :disabled="isLoading">
+                打开
+              </button>
             </div>
           </div>
         </div>
@@ -1274,7 +1365,7 @@ watch(selectedTemplateId, () => {
           <button 
             class="primary" 
             @click="nextStep" 
-            :disabled="isLoading || !canGoToStep(2)"
+            :disabled="isLoading || !canGoToStep(2) || (functionMode === 'batch' && batchData.length === 0)"
             style="background-color: #10b981; border-color: #10b981;"
           >
             生成文件
@@ -1352,19 +1443,19 @@ watch(selectedTemplateId, () => {
           <div class="form-item">
             <label for="date-format">日期格式</label>
             <select
-              id="date-format"
-              class="form-select"
-              v-model="selectedTemplate.dateFormat"
-              @change="saveConfig"
+            id="date-format"
+            class="form-select"
+            v-model="selectedTemplate.dateFormat"
+            @change="saveConfig(); updateFormData();"
+          >
+            <option
+              v-for="option in dateFormatOptions"
+              :key="option.value"
+              :value="option.value"
             >
-              <option
-                v-for="option in dateFormatOptions"
-                :key="option.value"
-                :value="option.value"
-              >
-                {{ option.label }} - {{ option.description }}
-              </option>
-            </select>
+              {{ option.label }} - {{ option.description }}
+            </option>
+          </select>
             <div class="hint-text">
               说明：此格式用于"当前日期"类型的时间字段，生成文档时会使用选定的格式显示日期。
             </div>
@@ -1430,7 +1521,7 @@ watch(selectedTemplateId, () => {
         </div>
         <div class="dialog-footer">
           <button class="secondary" @click="showConfigDialog = false">取消</button>
-          <button class="primary" @click="saveTemplateConfig; showConfigDialog = false">保存</button>
+          <button class="primary" @click="saveTemplateConfig(); showConfigDialog = false; updateFormData();">保存</button>
         </div>
       </div>
     </div>
@@ -1591,7 +1682,7 @@ watch(selectedTemplateId, () => {
 }
 
 .table-container {
-  max-height: 200px;
+  max-height: 400px;
   overflow-y: auto;
   border: 1px solid rgba(229, 231, 235, 0.9);
   border-radius: 8px;
@@ -1690,6 +1781,35 @@ watch(selectedTemplateId, () => {
   margin: 0;
   color: #065f46;
   font-weight: 500;
+}
+
+/* 批量生成结果列表 */
+.batch-result-section {
+  margin-top: 16px;
+}
+
+.generated-files-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  max-height: 300px;
+  overflow-y: auto;
+}
+
+.generated-file-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 10px 12px;
+  background: rgba(255, 255, 255, 0.8);
+  border: 1px solid rgba(229, 231, 235, 0.9);
+  border-radius: 8px;
+}
+
+.file-name {
+  font-weight: 500;
+  color: #111827;
+  font-size: 14px;
 }
 
 /* 适配移动端 */

@@ -1,4 +1,6 @@
 // Learn more about Tauri commands at https://tauri.app/develop/calling-rust/
+use std::fs::copy;
+use std::path::Path;
 use std::path::PathBuf;
 use tauri::Manager;
 
@@ -45,6 +47,20 @@ fn get_python_executable() -> String {
     "python3".to_string()
 }
 
+#[tauri::command]
+fn copy_file(source: String, destination: String) -> Result<(), String> {
+    // 确保源文件存在
+    if !Path::new(&source).exists() {
+        return Err(format!("源文件不存在: {}", source));
+    }
+    
+    // 复制文件
+    match copy(&source, &destination) {
+        Ok(_) => Ok(()),
+        Err(e) => Err(format!("复制文件失败: {}", e)),
+    }
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -52,7 +68,7 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_fs::init())
-        .invoke_handler(tauri::generate_handler![greet, get_python_executable])
+        .invoke_handler(tauri::generate_handler![greet, get_python_executable, copy_file])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }
