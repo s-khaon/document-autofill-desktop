@@ -10,7 +10,7 @@ import {
 } from "@tauri-apps/plugin-dialog";
 import { Command } from "@tauri-apps/plugin-shell";
 import { openPath } from "@tauri-apps/plugin-opener";
-import { exists, readTextFile, writeFile, mkdir, create, readFile, writeTextFile } from "@tauri-apps/plugin-fs";
+import { exists, readTextFile, mkdir, create, readFile, writeTextFile } from "@tauri-apps/plugin-fs";
 import { appDataDir } from "@tauri-apps/api/path";
 
 // 模板配置数据结构
@@ -68,7 +68,7 @@ const timeTypeOptions = [
   },
   {
     value: "currentDate.day",
-    label: "当前日期",
+    label: "当前日",
     description: "自动填充日期",
     placeholder: "{{执行时日}}"
   }
@@ -108,7 +108,6 @@ const functionMode = ref<'single' | 'batch'>('single');
 
 // 批量处理相关状态
 const batchData = ref<any[]>([]);
-const filenameField = ref<string>("");
 const importedFilePath = ref<string>("");
 
 // 模板列表
@@ -130,7 +129,6 @@ const placeholders = computed(() => {
 });
 
 const canGoStep2 = computed(() => !!selectedTemplate.value);
-const canGoStep3 = computed(() => !!selectedTemplate.value && placeholders.value.length > 0);
 
 function canGoToStep(step: 1 | 2) {
   if (step === 1) return true;
@@ -172,12 +170,6 @@ function markFormEdited() {
 
 // 存储配置文件路径
 const CONFIG_FILE = ref<string>("");
-
-// 初始化日期数据
-const today = new Date();
-const currentYear = today.getFullYear().toString();
-const currentMonth = (today.getMonth() + 1).toString().padStart(2, "0");
-const currentDay = today.getDate().toString().padStart(2, "0");
 
 // 保存配置到本地存储
 async function saveConfig() {
@@ -876,17 +868,6 @@ async function openBatchFile(filePath: string) {
   }
 }
 
-// 打开批量输出目录
-async function openBatchOutputDir() {
-  if (selectedTemplate.value?.outputDir) {
-    try {
-      await openPath(selectedTemplate.value.outputDir);
-    } catch (error) {
-      errorMsg.value = `打开目录失败：${error instanceof Error ? error.message : String(error)}`;
-    }
-  }
-}
-
 // 导入Excel数据
 async function importExcelData() {
   try {
@@ -956,9 +937,10 @@ async function importExcelData() {
       });
       
       // 重新映射列名，将Excel列名转换为占位符
+      const templatePlaceholders = selectedTemplate.value?.placeholders || [];
       batchData.value = jsonData.map((row: any) => {
         const mappedRow: Record<string, any> = {};
-        selectedTemplate.value.placeholders.forEach(placeholder => {
+        templatePlaceholders.forEach(placeholder => {
           const excelHeader = placeholderToHeader[placeholder];
           if (excelHeader && row[excelHeader] !== undefined) {
             mappedRow[placeholder] = row[excelHeader];
@@ -1752,41 +1734,6 @@ watch(selectedTemplateId, () => {
   border-color: #396cd8;
 }
 
-.batch-output-section {
-  display: flex;
-  flex-direction: column;
-  gap: 12px;
-}
-
-.filename-info {
-  margin-top: 5px;
-}
-
-.filename-info p {
-  margin: 5px 0;
-  font-size: 0.9rem;
-  color: #6b7280;
-}
-
-.filename-info .warning {
-  color: #d97706;
-  font-weight: 500;
-}
-
-.batch-summary {
-  padding: 10px 12px;
-  background: rgba(240, 253, 232, 0.9);
-  border: 1px solid rgba(110, 231, 183, 0.6);
-  border-radius: 8px;
-  margin-top: 10px;
-}
-
-.batch-summary p {
-  margin: 0;
-  color: #065f46;
-  font-weight: 500;
-}
-
 /* 批量生成结果列表 */
 .batch-result-section {
   margin-top: 16px;
@@ -1919,13 +1866,6 @@ watch(selectedTemplateId, () => {
   margin: 0 0 10px 0;
   font-size: 14px;
   color: #111827;
-}
-
-.two-col {
-  display: grid;
-  grid-template-columns: 360px 1fr;
-  gap: 12px;
-  align-items: start;
 }
 
 .file-selector {
