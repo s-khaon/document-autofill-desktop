@@ -912,6 +912,10 @@ async function importExcelData() {
       importedFilePath.value = filePath;
       isLoading.value = true;
       
+      // 清除上一次的导入和生成结果
+      batchData.value = [];
+      batchGeneratedFiles.value = [];
+      
       const { read, utils } = await import('xlsx');
       
       // 使用Tauri的fs API读取二进制文件
