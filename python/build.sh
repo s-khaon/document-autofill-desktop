@@ -20,7 +20,7 @@ pip install pyinstaller
 
 # 使用PyInstaller打包
 echo "使用PyInstaller打包..."
-pyinstaller --onefile --name word_filler main.py
+pyinstaller --onefile --name word_filler main.py --collect-all docx
 
 echo "构建完成！"
 echo "可执行文件路径：$(pwd)/dist/word_filler"

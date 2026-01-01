@@ -21,6 +21,12 @@
       "identifier": "shell:allow-execute",
       "allow": [
         {
+          "name": "bundled-python",
+          "cmd": "word_filler",
+          "args": true,
+          "sidecar": false
+        },
+        {
           "name": "python-script",
           "cmd": "python3",
           "args": true,

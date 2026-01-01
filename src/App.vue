@@ -382,7 +382,57 @@ async function extractPlaceholdersFromTemplate(templatePath: string): Promise<st
     console.log("模板路径:", templatePath);
     
     // 调用Python程序提取占位符，指定python目录作为工作目录
-    // 注意：Tauri shell plugin 需要配置允许的命令 scope
+    
+    // 检查是否使用打包的 Python (word_filler)
+    const isBundled = pythonExecutable.endsWith("word_filler") || pythonExecutable.endsWith("word_filler.exe");
+    
+    let placeholders: string[] = [];
+
+    if (isBundled) {
+      console.log("执行打包命令 (Rust):", "run_python_backend", [templatePath, "", "", "extract"]);
+      
+      // 使用 Rust 后端命令直接执行，绕过 Shell 插件限制
+      const stdout = await invoke<string>("run_python_backend", {
+        args: [templatePath, "", "", "extract"]
+      });
+      
+      console.log("命令输出:", stdout);
+      placeholders = JSON.parse(stdout);
+    } else {
+      // 开发环境：继续使用 shell 插件或者也切换到 rust 后端？
+      // 为了统一，建议开发环境也尝试使用 Rust 后端，但需要注意 main.py 路径
+      
+      // 我们需要获取 main.py 的绝对路径
+      // 从 pythonExecutable 中推断
+      // pythonExecutable: .../python/.venv/bin/python3
+      // main.py should be in .../python/main.py
+      
+      let mainPyPath = "main.py";
+      if (pythonExecutable.includes(".venv")) {
+        const venvBinIndex = pythonExecutable.indexOf(".venv");
+        if (venvBinIndex > 0) {
+          const pythonDir = pythonExecutable.substring(0, venvBinIndex);
+          mainPyPath = pythonDir + "main.py";
+        }
+      }
+      
+      console.log("执行脚本命令 (Rust):", "run_python_backend", [mainPyPath, templatePath, "", "", "extract"]);
+      
+      const stdout = await invoke<string>("run_python_backend", {
+        args: [mainPyPath, templatePath, "", "", "extract"]
+      });
+      
+      console.log("命令输出:", stdout);
+      placeholders = JSON.parse(stdout);
+    }
+    
+    console.log("解析后的占位符:", placeholders);
+    return placeholders;
+    
+    /* 
+    // 旧的 Shell 插件代码，暂时注释
+    const command = Command.create(commandName, ...);
+    */
     // 这里我们尝试直接执行，但如果是绝对路径，需要在 tauri.conf.json 中配置
     // 或者我们使用 sidecar 模式（生产环境推荐）
     
@@ -798,49 +848,52 @@ async function generateDocument() {
     const filename = generateFilenameFromTemplate(selectedTemplate.value.filenameTemplate, formData);
     const outputPath = `${selectedTemplate.value.outputDir}/${filename}`;
     
+    // 检查是否使用打包的 Python (word_filler)
+    const isBundled = pythonExecutable.endsWith("word_filler") || pythonExecutable.endsWith("word_filler.exe");
+    
+    if (isBundled) {
+      console.log("执行打包命令 (Rust):", "run_python_backend", [selectedTemplate.value.path, outputPath, "dataJson...", "fill"]);
+
+      // 使用 Rust 后端命令直接执行
+      await invoke<string>("run_python_backend", {
+        args: [
+          selectedTemplate.value.path, 
+          outputPath, 
+          dataJson,
+          "fill"
+        ]
+      });
+      
+      successMsg.value = `文件生成成功！保存位置：${outputPath}`;
+      generatedOutputPath.value = outputPath;
+      return;
+    }
+    
     // 我们需要获取 main.py 的绝对路径
     // 从 pythonExecutable 中推断
     let mainPyPath = "main.py";
-    let commandName = pythonExecutable;
-
     if (pythonExecutable.includes(".venv")) {
-      // 这是一个简单的推断，假设结构是 standard
-      // pythonExecutable: .../python/.venv/bin/python3
-      // 我们需要 .../python/main.py
-      // 向上 3 级
       const venvBinIndex = pythonExecutable.indexOf(".venv");
       if (venvBinIndex > 0) {
         const pythonDir = pythonExecutable.substring(0, venvBinIndex);
         mainPyPath = pythonDir + "main.py";
       }
-      
-      // 使用 capabilities 中定义的别名，避免绝对路径匹配问题
-      commandName = "venv-python";
-    } else {
-        // 如果是系统 python3，使用 python-script 别名或者直接 python3
-        // 假设 capabilities 中定义了 python-script -> python3
-        if (pythonExecutable === "python3") {
-            commandName = "python-script";
-        }
     }
-    
-    console.log("执行生成命令:", commandName, [mainPyPath, selectedTemplate.value.path, outputPath, "dataJson..."]);
 
-    // 调用Python程序
-    const result = await Command.create(commandName, [
-      mainPyPath,
-      selectedTemplate.value.path, 
-      outputPath, 
-      dataJson,
-      "fill"
-    ]).execute();
+    console.log("执行生成命令 (Rust):", "run_python_backend", [mainPyPath, selectedTemplate.value.path, outputPath, "dataJson..."]);
+
+    await invoke<string>("run_python_backend", {
+      args: [
+        mainPyPath,
+        selectedTemplate.value.path, 
+        outputPath, 
+        dataJson,
+        "fill"
+      ]
+    });
     
-    if (result.code === 0) {
-      successMsg.value = `文件生成成功！保存位置：${outputPath}`;
-      generatedOutputPath.value = outputPath;
-    } else {
-      errorMsg.value = `生成文件失败：${result.stderr || result.stdout}`;
-    }
+    successMsg.value = `文件生成成功！保存位置：${outputPath}`;
+    generatedOutputPath.value = outputPath;
   } catch (error) {
     errorMsg.value = `生成文件失败：${error instanceof Error ? error.message : String(error)}`;
   } finally {
