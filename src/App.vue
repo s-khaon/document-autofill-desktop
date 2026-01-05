@@ -1048,31 +1048,15 @@ async function generateBatchDocuments() {
     errorMsg.value = "";
     successMsg.value = "";
 
-    // 获取Python可执行文件路径
     const pythonExecutable = await invoke<string>("get_python_executable");
-    
+    const isBundled = pythonExecutable.endsWith("word_filler") || pythonExecutable.endsWith("word_filler.exe");
     let mainPyPath = "main.py";
-    let commandName = pythonExecutable;
-
-    if (pythonExecutable.includes(".venv")) {
-      // 这是一个简单的推断，假设结构是 standard
-      // pythonExecutable: .../python/.venv/bin/python3
-      // 我们需要 .../python/main.py
-      // 向上 3 级
+    if (!isBundled && pythonExecutable.includes(".venv")) {
       const venvBinIndex = pythonExecutable.indexOf(".venv");
       if (venvBinIndex > 0) {
         const pythonDir = pythonExecutable.substring(0, venvBinIndex);
         mainPyPath = pythonDir + "main.py";
       }
-      
-      // 使用 capabilities 中定义的别名，避免绝对路径匹配问题
-      commandName = "venv-python";
-    } else {
-        // 如果是系统 python3，使用 python-script 别名或者直接 python3
-        // 假设 capabilities 中定义了 python-script -> python3
-        if (pythonExecutable === "python3") {
-            commandName = "python-script";
-        }
     }
     
     // 批量生成文件
@@ -1102,30 +1086,34 @@ async function generateBatchDocuments() {
       const outputFilePath = `${selectedTemplate.value.outputDir}/${filename}`;
       console.log("输出路径:", outputFilePath);
       
-      // 构建命令行参数
       const dataJson = JSON.stringify(processedRowData);
       
       try {
-        // 调用Python程序
-        console.log("调用Python生成文件...");
-        const result = await Command.create(commandName, [
-          mainPyPath,
-          selectedTemplate.value.path, 
-          outputFilePath, 
-          dataJson,
-          "fill"
-        ]).execute();
-        
-        console.log("Python返回结果:", result.code, result.stderr);
-        
-        if (result.code === 0) {
-          successCount++;
-          batchGeneratedFiles.value.push(outputFilePath);
-          console.log("文件生成成功:", outputFilePath);
+        if (isBundled) {
+          console.log("批量生成使用打包后可执行文件:", pythonExecutable);
+          await invoke<string>("run_python_backend", {
+            args: [
+              selectedTemplate.value.path,
+              outputFilePath,
+              dataJson,
+              "fill"
+            ]
+          });
         } else {
-          failureCount++;
-          console.error(`生成文件失败 (${i+1}/${batchData.value.length})：${result.stderr || result.stdout}`);
+          console.log("批量生成使用脚本模式:", pythonExecutable, mainPyPath);
+          await invoke<string>("run_python_backend", {
+            args: [
+              mainPyPath,
+              selectedTemplate.value.path,
+              outputFilePath,
+              dataJson,
+              "fill"
+            ]
+          });
         }
+        successCount++;
+        batchGeneratedFiles.value.push(outputFilePath);
+        console.log("文件生成成功:", outputFilePath);
       } catch (error) {
         failureCount++;
         console.error(`生成文件异常 (${i+1}/${batchData.value.length})：${error instanceof Error ? error.message : String(error)}`);
