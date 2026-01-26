@@ -26,6 +26,7 @@ interface TemplateConfig {
   updatedAt: string;
   timeFieldConfig: Record<string, string>;
   dateFormat: string;
+  createOuterFolder?: boolean; // 是否在外层创建文件夹
 }
 
 // 应用状态
@@ -182,16 +183,16 @@ async function saveConfig() {
     console.log("配置保存路径：", CONFIG_FILE.value);
     console.log("当前模板数量：", templates.value.length);
     console.log("模板数据：", JSON.stringify(templates.value, null, 2));
-    
+
     // 提取目录路径
     const dirPath = CONFIG_FILE.value.substring(0, CONFIG_FILE.value.lastIndexOf('/'));
     console.log("配置文件目录：", dirPath);
-    
+
     // 检查目录是否存在，如果不存在则创建
     try {
       const dirExists = await exists(dirPath);
       console.log("目录是否存在：", dirExists);
-      
+
       if (!dirExists) {
         console.log("目录不存在，正在创建...");
         await mkdir(dirPath, { recursive: true });
@@ -201,10 +202,10 @@ async function saveConfig() {
       console.error("创建目录失败：", mkdirError);
       throw mkdirError;
     }
-    
+
     // 保存配置文件
     await writeTextFile(CONFIG_FILE.value, JSON.stringify(templates.value, null, 2));
-    
+
     console.log("配置保存成功！");
     console.log("========== 配置保存完成 ==========");
   } catch (error) {
@@ -223,16 +224,16 @@ async function loadConfig() {
     }
     console.log("========== 开始加载配置 ==========");
     console.log("配置文件路径：", CONFIG_FILE.value);
-    
+
     try {
       console.log("正在尝试读取配置文件...");
       const content = await readTextFile(CONFIG_FILE.value);
       console.log("配置文件内容长度：", content.length);
-      
+
       templates.value = JSON.parse(content);
       console.log("成功解析配置，模板数量：", templates.value.length);
       console.log("模板数据：", JSON.stringify(templates.value, null, 2));
-      
+
       // 确保所有模板都有 timeFieldConfig 字段（向后兼容）
       templates.value.forEach(template => {
         if (!template.timeFieldConfig) {
@@ -241,8 +242,11 @@ async function loadConfig() {
         if (!template.dateFormat) {
           template.dateFormat = "yyyy-MM-dd";
         }
+        if (template.createOuterFolder === undefined) {
+          template.createOuterFolder = false;
+        }
       });
-      
+
       if (templates.value.length > 0) {
         selectedTemplateId.value = templates.value[0].id;
         updateFormData();
@@ -279,11 +283,11 @@ async function addTemplate() {
     const selected = await openDialog(options);
     if (selected) {
       const originalPath = Array.isArray(selected) ? selected[0] : selected;
-      
+
       // 获取应用数据目录，用于存储复制的模板
       const dataDir = await appDataDir();
       const templatesDir = `${dataDir}/templates`;
-      
+
       // 确保模板目录存在
       try {
         const dirExists = await exists(templatesDir);
@@ -294,20 +298,20 @@ async function addTemplate() {
         console.error("创建模板目录失败：", mkdirError);
         throw mkdirError;
       }
-      
+
       // 生成模板文件名和路径
       const templateFilename = `${Date.now()}_${originalPath.split("/").pop() || "template.docx"}`;
       const copiedPath = `${templatesDir}/${templateFilename}`;
-      
+
       // 复制模板文件到应用数据目录
       await invoke("copy_file", {
         source: originalPath,
         destination: copiedPath
       });
-      
+
       // 提取模板中的占位符（使用复制后的路径）
       const placeholders = await extractPlaceholdersFromTemplate(copiedPath);
-      
+
       // 创建新的模板配置
       const newTemplate: TemplateConfig = {
         id: `template-${Date.now()}`,
@@ -322,21 +326,22 @@ async function addTemplate() {
         updatedAt: new Date().toISOString(),
         timeFieldConfig: {},
         dateFormat: "yyyy-MM-dd",
+        createOuterFolder: false,
       };
-      
+
       // 添加到模板列表
       templates.value.push(newTemplate);
       selectedTemplateId.value = newTemplate.id;
-      
+
       // 更新表单数据
       updateFormData();
       hasEditedForm.value = false;
       generatedOutputPath.value = "";
       currentStep.value = 1;
-      
+
       // 保存配置
       await saveConfig();
-      
+
       errorMsg.value = "";
       successMsg.value = "模板添加成功！";
     }
@@ -352,7 +357,7 @@ async function deleteTemplate(templateId: string) {
     "确定要删除这个模板吗？",
     "删除确认"
   );
-  
+
   if (confirmed) {
     templates.value = templates.value.filter(t => t.id !== templateId);
     if (selectedTemplateId.value === templateId) {
@@ -374,39 +379,39 @@ async function extractPlaceholdersFromTemplate(templatePath: string): Promise<st
   try {
     isLoading.value = true;
     errorMsg.value = "";
-    
+
     // 获取Python可执行文件路径
     const pythonExecutable = await invoke<string>("get_python_executable");
-    
+
     console.log("Python可执行文件路径:", pythonExecutable);
     console.log("模板路径:", templatePath);
-    
+
     // 调用Python程序提取占位符，指定python目录作为工作目录
-    
+
     // 检查是否使用打包的 Python (word_filler)
     const isBundled = pythonExecutable.endsWith("word_filler") || pythonExecutable.endsWith("word_filler.exe");
-    
+
     let placeholders: string[] = [];
 
     if (isBundled) {
       console.log("执行打包命令 (Rust):", "run_python_backend", [templatePath, "", "", "extract"]);
-      
+
       // 使用 Rust 后端命令直接执行，绕过 Shell 插件限制
       const stdout = await invoke<string>("run_python_backend", {
         args: [templatePath, "", "", "extract"]
       });
-      
+
       console.log("命令输出:", stdout);
       placeholders = JSON.parse(stdout);
     } else {
       // 开发环境：继续使用 shell 插件或者也切换到 rust 后端？
       // 为了统一，建议开发环境也尝试使用 Rust 后端，但需要注意 main.py 路径
-      
+
       // 我们需要获取 main.py 的绝对路径
       // 从 pythonExecutable 中推断
       // pythonExecutable: .../python/.venv/bin/python3
       // main.py should be in .../python/main.py
-      
+
       let mainPyPath = "main.py";
       if (pythonExecutable.includes(".venv")) {
         const venvBinIndex = pythonExecutable.indexOf(".venv");
@@ -415,37 +420,37 @@ async function extractPlaceholdersFromTemplate(templatePath: string): Promise<st
           mainPyPath = pythonDir + "main.py";
         }
       }
-      
+
       console.log("执行脚本命令 (Rust):", "run_python_backend", [mainPyPath, templatePath, "", "", "extract"]);
-      
+
       const stdout = await invoke<string>("run_python_backend", {
         args: [mainPyPath, templatePath, "", "", "extract"]
       });
-      
+
       console.log("命令输出:", stdout);
       placeholders = JSON.parse(stdout);
     }
-    
+
     console.log("解析后的占位符:", placeholders);
     return placeholders;
-    
+
     /* 
     // 旧的 Shell 插件代码，暂时注释
     const command = Command.create(commandName, ...);
     */
     // 这里我们尝试直接执行，但如果是绝对路径，需要在 tauri.conf.json 中配置
     // 或者我们使用 sidecar 模式（生产环境推荐）
-    
+
     // 如果是开发环境且找到了 venv，我们尝试用绝对路径
     // 如果是生产环境，pythonExecutable 应该是 resource 中的路径，或者是系统 python3
-    
+
     console.log("执行命令:", pythonExecutable, ["main.py", templatePath, "", "", "extract"]);
-    
+
     // 我们需要获取 main.py 的绝对路径
     // 从 pythonExecutable 中推断
     // pythonExecutable: .../python/.venv/bin/python3
     // main.py should be in .../python/main.py
-    
+
     let mainPyPath = "main.py";
     let commandName = pythonExecutable;
 
@@ -459,31 +464,31 @@ async function extractPlaceholdersFromTemplate(templatePath: string): Promise<st
         const pythonDir = pythonExecutable.substring(0, venvBinIndex);
         mainPyPath = pythonDir + "main.py";
       }
-      
+
       // 使用 capabilities 中定义的别名，避免绝对路径匹配问题
       commandName = "venv-python";
     } else {
-        // 如果是系统 python3，使用 python-script 别名或者直接 python3
-        // 假设 capabilities 中定义了 python-script -> python3
-        if (pythonExecutable === "python3") {
-            commandName = "python-script";
-        }
+      // 如果是系统 python3，使用 python-script 别名或者直接 python3
+      // 假设 capabilities 中定义了 python-script -> python3
+      if (pythonExecutable === "python3") {
+        commandName = "python-script";
+      }
     }
-    
+
     console.log("main.py 路径:", mainPyPath);
     console.log("Command Name:", commandName);
 
     const command = Command.create(commandName, [
-      mainPyPath, 
-      templatePath, 
-      "", 
-      "", 
+      mainPyPath,
+      templatePath,
+      "",
+      "",
       "extract"
     ]);
-    
+
     // 尝试: spawn 选项中可能有 cwd
     const result = await command.execute();
-    
+
     if (result.code === 0) {
       console.log("命令输出:", result.stdout);
       const placeholders = JSON.parse(result.stdout);
@@ -506,7 +511,7 @@ async function extractPlaceholdersFromTemplate(templatePath: string): Promise<st
 // 更新表单数据
 function updateFormData() {
   Object.keys(formData).forEach(key => delete formData[key]);
-  
+
   if (selectedTemplate.value) {
     selectedTemplate.value.placeholders.forEach(placeholder => {
       const timeType = selectedTemplate.value?.timeFieldConfig?.[placeholder];
@@ -522,7 +527,7 @@ function updateFormData() {
 // 选择输出目录
 async function selectOutputDir() {
   if (!selectedTemplate.value) return;
-  
+
   try {
     const options: OpenDialogOptions = {
       title: "选择默认输出目录",
@@ -574,7 +579,7 @@ function isTimeField(placeholder: string): boolean {
 // 切换时间字段状态
 function toggleTimeField(placeholder: string, event: Event) {
   const checkbox = event.target as HTMLInputElement;
-  
+
   if (checkbox.checked) {
     // 打开时间类型选择对话框
     currentConfiguringField.value = placeholder;
@@ -586,7 +591,7 @@ function toggleTimeField(placeholder: string, event: Event) {
       delete selectedTemplate.value.timeFieldConfig[placeholder];
       selectedTemplate.value.updatedAt = new Date().toISOString();
       saveConfig();
-      
+
       // 立即更新表单数据，确保配置生效
       updateFormData();
     }
@@ -598,23 +603,23 @@ function confirmTimeType() {
   if (!selectedTemplate.value || !currentConfiguringField.value || !selectedTimeType.value) {
     return;
   }
-  
+
   // 设置时间字段配置
   if (!selectedTemplate.value.timeFieldConfig) {
     selectedTemplate.value.timeFieldConfig = {};
   }
   selectedTemplate.value.timeFieldConfig[currentConfiguringField.value] = selectedTimeType.value;
-  
+
   // 获取对应的占位符
   const option = timeTypeOptions.find(opt => opt.value === selectedTimeType.value);
   if (option) {
     selectedTemplate.value.defaultValues[currentConfiguringField.value] = option.placeholder;
   }
-  
+
   selectedTemplate.value.updatedAt = new Date().toISOString();
   saveConfig();
   showTimeTypeDialog.value = false;
-  
+
   // 立即更新表单数据，确保配置生效
   updateFormData();
 }
@@ -625,8 +630,8 @@ function calculateTimeValue(type: string): string {
   const year = today.getFullYear();
   const month = (today.getMonth() + 1).toString().padStart(2, '0');
   const day = today.getDate().toString().padStart(2, '0');
-  
-  switch(type) {
+
+  switch (type) {
     case 'currentDate':
       const dateFormat = selectedTemplate.value?.dateFormat || 'yyyy-MM-dd';
       return dateFormat
@@ -650,18 +655,18 @@ function replaceTimePlaceholders(value: any): string {
   if (!strValue.includes('{{执行时')) {
     return strValue;
   }
-  
+
   const today = new Date();
   const year = today.getFullYear();
   const month = (today.getMonth() + 1).toString().padStart(2, '0');
   const day = today.getDate().toString().padStart(2, '0');
-  
+
   const dateFormat = selectedTemplate.value?.dateFormat || 'yyyy-MM-dd';
   const formattedDate = dateFormat
     .replace('yyyy', year.toString())
     .replace('MM', month)
     .replace('dd', day);
-  
+
   return strValue
     .replace(/{{执行时日期}}/g, formattedDate)
     .replace(/{{执行时年}}/g, year.toString())
@@ -722,20 +727,20 @@ function generateFilenameFromTemplate(template: string, data: Record<string, str
   if (!template) {
     return `output_${Date.now()}.docx`;
   }
-  
+
   let filename = template;
-  
+
   // 替换所有 {{字段名}} 占位符
   for (const [key, value] of Object.entries(data)) {
     const placeholder = `{{${key}}}`;
     filename = filename.replace(new RegExp(placeholder, 'g'), value || '');
   }
-  
+
   // 如果模板中没有 .docx 后缀，添加它
   if (!filename.endsWith('.docx')) {
     filename += '.docx';
   }
-  
+
   return filename;
 }
 
@@ -756,18 +761,18 @@ async function exportExcelTemplate() {
     }
 
     const { utils, write } = await import('xlsx');
-    
+
     // 创建工作表数据
     const headers = selectedTemplate.value.placeholders;
     const worksheetData = [headers];
-    
+
     // 创建工作簿和工作表
     const workbook = utils.book_new();
     const worksheet = utils.aoa_to_sheet(worksheetData);
-    
+
     // 添加工作表到工作簿
     utils.book_append_sheet(workbook, worksheet, '模板数据');
-    
+
     // 选择保存位置
     const options: SaveDialogOptions = {
       title: "导出Excel模板",
@@ -784,15 +789,15 @@ async function exportExcelTemplate() {
     if (selected) {
       // 生成Excel文件
       isLoading.value = true;
-      
+
       // 使用xlsx库生成Excel数据
       const excelBuffer = write(workbook, { bookType: 'xlsx', type: 'array' });
-      
+
       // 使用Tauri的fs API写入二进制文件
       const file = await create(selected);
       await file.write(excelBuffer);
       await file.close();
-      
+
       successMsg.value = `Excel模板导出成功！保存位置：${selected}`;
     }
   } catch (error) {
@@ -840,35 +845,53 @@ async function generateDocument() {
 
     // 获取Python可执行文件路径
     const pythonExecutable = await invoke<string>("get_python_executable");
-    
+
     // 构建命令行参数
     const dataJson = JSON.stringify(processedFormData);
-    
+
     // 生成文件名
     const filename = generateFilenameFromTemplate(selectedTemplate.value.filenameTemplate, formData);
-    const outputPath = `${selectedTemplate.value.outputDir}/${filename}`;
-    
+
+    // 处理外层目录
+    let outputDir = selectedTemplate.value.outputDir;
+    if (selectedTemplate.value.createOuterFolder) {
+      const folderName = filename.replace(/\.docx$/, "");
+      outputDir = `${outputDir}/${folderName}`;
+
+      try {
+        const dirExists = await exists(outputDir);
+        if (!dirExists) {
+          await mkdir(outputDir, { recursive: true });
+        }
+      } catch (e) {
+        console.error("创建外层目录失败:", e);
+        throw e;
+      }
+    }
+
+    const outputPath = `${outputDir}/${filename}`;
+
     // 检查是否使用打包的 Python (word_filler)
     const isBundled = pythonExecutable.endsWith("word_filler") || pythonExecutable.endsWith("word_filler.exe");
-    
+
     if (isBundled) {
       console.log("执行打包命令 (Rust):", "run_python_backend", [selectedTemplate.value.path, outputPath, "dataJson...", "fill"]);
 
       // 使用 Rust 后端命令直接执行
       await invoke<string>("run_python_backend", {
         args: [
-          selectedTemplate.value.path, 
-          outputPath, 
+          selectedTemplate.value.path,
+          outputPath,
           dataJson,
           "fill"
         ]
       });
-      
+
       successMsg.value = `文件生成成功！保存位置：${outputPath}`;
       generatedOutputPath.value = outputPath;
       return;
     }
-    
+
     // 我们需要获取 main.py 的绝对路径
     // 从 pythonExecutable 中推断
     let mainPyPath = "main.py";
@@ -885,13 +908,13 @@ async function generateDocument() {
     await invoke<string>("run_python_backend", {
       args: [
         mainPyPath,
-        selectedTemplate.value.path, 
-        outputPath, 
+        selectedTemplate.value.path,
+        outputPath,
         dataJson,
         "fill"
       ]
     });
-    
+
     successMsg.value = `文件生成成功！保存位置：${outputPath}`;
     generatedOutputPath.value = outputPath;
   } catch (error) {
@@ -945,25 +968,25 @@ async function importExcelData() {
       const filePath = Array.isArray(selected) ? selected[0] : selected;
       importedFilePath.value = filePath;
       isLoading.value = true;
-      
+
       // 清除上一次的导入和生成结果
       batchData.value = [];
       batchGeneratedFiles.value = [];
-      
+
       const { read, utils } = await import('xlsx');
-      
+
       // 使用Tauri的fs API读取二进制文件
       const fileContent = await readFile(filePath);
-      
+
       // 解析Excel文件
       const workbook = read(fileContent, {
         type: 'array'
       });
-      
+
       // 获取第一个工作表
       const worksheetName = workbook.SheetNames[0];
       const worksheet = workbook.Sheets[worksheetName];
-      
+
       // 先获取Excel的实际列名（第一行）
       const range = utils.decode_range(worksheet['!ref'] || 'A1');
       const excelHeaders: string[] = [];
@@ -972,7 +995,7 @@ async function importExcelData() {
         const cell = worksheet[cellAddress];
         excelHeaders.push(cell ? String(cell.v) : `列${col + 1}`);
       }
-      
+
       // 创建占位符到Excel列名的映射
       const placeholderToHeader: Record<string, string> = {};
       selectedTemplate.value.placeholders.forEach(placeholder => {
@@ -982,13 +1005,13 @@ async function importExcelData() {
           placeholderToHeader[placeholder] = matchingHeader;
         }
       });
-      
+
       // 转换为JSON格式，使用Excel实际列名
       const jsonData = utils.sheet_to_json(worksheet, {
         header: excelHeaders,
         range: 1 // 跳过第一行（表头行）
       });
-      
+
       // 重新映射列名，将Excel列名转换为占位符
       const templatePlaceholders = selectedTemplate.value?.placeholders || [];
       batchData.value = jsonData.map((row: any) => {
@@ -1010,7 +1033,7 @@ async function importExcelData() {
         }
         return true;
       });
-      
+
       successMsg.value = `成功导入 ${batchData.value.length} 条记录`;
       errorMsg.value = "";
     }
@@ -1058,36 +1081,55 @@ async function generateBatchDocuments() {
         mainPyPath = pythonDir + "main.py";
       }
     }
-    
+
     // 批量生成文件
     let successCount = 0;
     let failureCount = 0;
-    
+
     console.log("开始批量生成，共", batchData.value.length, "条记录");
     console.log("输出目录:", selectedTemplate.value.outputDir);
     console.log("文件名模板:", selectedTemplate.value.filenameTemplate);
-    
+
     for (let i = 0; i < batchData.value.length; i++) {
       const rowData = batchData.value[i];
-      
-      console.log("处理第", i+1, "条数据:", rowData);
-      
+
+      console.log("处理第", i + 1, "条数据:", rowData);
+
       // 替换时间占位符为实际值
       const processedRowData: Record<string, string> = {};
       for (const [key, value] of Object.entries(rowData)) {
         processedRowData[key] = replaceTimePlaceholders(value);
       }
-      
+
       // 使用文件名模板生成文件名
       const filename = generateFilenameFromTemplate(selectedTemplate.value.filenameTemplate, processedRowData);
       console.log("生成文件名:", filename);
-      
+
+      // 处理外层目录
+      let outputDir = selectedTemplate.value.outputDir;
+      if (selectedTemplate.value.createOuterFolder) {
+        const folderName = filename.replace(/\.docx$/, "");
+        outputDir = `${outputDir}/${folderName}`;
+
+        try {
+          const dirExists = await exists(outputDir);
+          if (!dirExists) {
+            await mkdir(outputDir, { recursive: true });
+          }
+        } catch (e) {
+          console.error("创建外层目录失败:", e);
+          failureCount++;
+          console.error(`生成文件异常 (${i + 1}/${batchData.value.length})：创建目录失败`);
+          continue;
+        }
+      }
+
       // 构建输出路径
-      const outputFilePath = `${selectedTemplate.value.outputDir}/${filename}`;
+      const outputFilePath = `${outputDir}/${filename}`;
       console.log("输出路径:", outputFilePath);
-      
+
       const dataJson = JSON.stringify(processedRowData);
-      
+
       try {
         if (isBundled) {
           console.log("批量生成使用打包后可执行文件:", pythonExecutable);
@@ -1116,18 +1158,18 @@ async function generateBatchDocuments() {
         console.log("文件生成成功:", outputFilePath);
       } catch (error) {
         failureCount++;
-        console.error(`生成文件异常 (${i+1}/${batchData.value.length})：${error instanceof Error ? error.message : String(error)}`);
+        console.error(`生成文件异常 (${i + 1}/${batchData.value.length})：${error instanceof Error ? error.message : String(error)}`);
       }
     }
-    
+
     console.log("批量生成完成，成功:", successCount, "失败:", failureCount);
-    
+
     if (successCount > 0) {
       successMsg.value = `批量生成完成！成功：${successCount} 个，失败：${failureCount} 个`;
     } else if (failureCount > 0) {
       errorMsg.value = `批量生成失败！请检查模板配置或Python环境`;
     }
-    
+
   } catch (error) {
     errorMsg.value = `批量生成失败：${error instanceof Error ? error.message : String(error)}`;
   } finally {
@@ -1138,7 +1180,7 @@ async function generateBatchDocuments() {
 // 生命周期钩子
 onMounted(async () => {
   console.log("========== 应用启动 ==========");
-  
+
   // 初始化配置文件路径
   try {
     const dataDir = await appDataDir();
@@ -1148,10 +1190,10 @@ onMounted(async () => {
   } catch (error) {
     console.error("获取应用数据目录失败:", error);
   }
-  
+
   // 加载保存的配置
   await loadConfig();
-  
+
   console.log("========== 应用启动完成 ==========");
 });
 
@@ -1189,21 +1231,11 @@ watch(selectedTemplateId, () => {
         </button>
         <div class="mode-switch">
           <label>
-            <input 
-              type="radio" 
-              value="single" 
-              v-model="functionMode" 
-              name="functionMode"
-            />
+            <input type="radio" value="single" v-model="functionMode" name="functionMode" />
             单文件生成
           </label>
           <label>
-            <input 
-              type="radio" 
-              value="batch" 
-              v-model="functionMode" 
-              name="functionMode"
-            />
+            <input type="radio" value="batch" v-model="functionMode" name="functionMode" />
             批量生成
           </label>
         </div>
@@ -1214,20 +1246,11 @@ watch(selectedTemplateId, () => {
     </header>
 
     <nav class="stepper" aria-label="步骤">
-      <button
-        class="step"
-        :class="{ active: currentStep === 1 }"
-        @click="goToStep(1)"
-      >
+      <button class="step" :class="{ active: currentStep === 1 }" @click="goToStep(1)">
         <span class="step-index">1</span>
         <span class="step-label">选择模板</span>
       </button>
-      <button
-        class="step"
-        :class="{ active: currentStep === 2 }"
-        :disabled="!canGoToStep(2)"
-        @click="goToStep(2)"
-      >
+      <button class="step" :class="{ active: currentStep === 2 }" :disabled="!canGoToStep(2)" @click="goToStep(2)">
         <span class="step-index">2</span>
         <span class="step-label">填写数据</span>
       </button>
@@ -1238,12 +1261,7 @@ watch(selectedTemplateId, () => {
     <!-- 成功信息 -->
     <div v-if="successMsg" class="message success">
       <span>{{ successMsg }}</span>
-      <button
-        v-if="generatedOutputPath"
-        @click="openGeneratedFile"
-        class="secondary small"
-        style="margin-left: 10px;"
-      >
+      <button v-if="generatedOutputPath" @click="openGeneratedFile" class="secondary small" style="margin-left: 10px;">
         打开文件
       </button>
     </div>
@@ -1255,14 +1273,8 @@ watch(selectedTemplateId, () => {
       </div>
 
       <div class="template-list" v-if="templates.length > 0">
-        <button
-          v-for="template in templates"
-          :key="template.id"
-          type="button"
-          class="template-row"
-          :class="{ selected: template.id === selectedTemplateId }"
-          @click="selectedTemplateId = template.id"
-        >
+        <button v-for="template in templates" :key="template.id" type="button" class="template-row"
+          :class="{ selected: template.id === selectedTemplateId }" @click="selectedTemplateId = template.id">
           <div class="template-row-main">
             <div class="template-row-title">
               <span class="template-name">{{ template.name }}</span>
@@ -1315,20 +1327,10 @@ watch(selectedTemplateId, () => {
 
       <!-- 单文件模式：表单填写 -->
       <div v-if="functionMode === 'single'" class="form-grid">
-        <div
-          v-for="placeholder in placeholders"
-          :key="placeholder"
-          class="form-item"
-        >
+        <div v-for="placeholder in placeholders" :key="placeholder" class="form-item">
           <label :for="placeholder">{{ placeholder }}</label>
-          <input
-            :id="placeholder"
-            v-model="formData[placeholder]"
-            type="text"
-            :placeholder="`请输入${placeholder}`"
-            :disabled="isLoading"
-            @input="markFormEdited"
-          />
+          <input :id="placeholder" v-model="formData[placeholder]" type="text" :placeholder="`请输入${placeholder}`"
+            :disabled="isLoading" @input="markFormEdited" />
         </div>
       </div>
 
@@ -1336,7 +1338,7 @@ watch(selectedTemplateId, () => {
       <div v-else-if="functionMode === 'batch'" class="batch-section">
         <div class="panel">
           <h3 class="panel-title">批量数据操作</h3>
-          
+
           <div class="batch-actions">
             <div class="batch-action-group">
               <h4>1. 准备数据</h4>
@@ -1352,7 +1354,7 @@ watch(selectedTemplateId, () => {
                 已导入：{{ importedFilePath }}
               </div>
             </div>
-            
+
             <div class="batch-action-group">
               <h4>2. 数据预览</h4>
               <div v-if="batchData.length > 0" class="data-preview">
@@ -1403,12 +1405,9 @@ watch(selectedTemplateId, () => {
           <button class="secondary" @click="prevStep" :disabled="isLoading">上一步</button>
         </div>
         <div class="right">
-          <button 
-            class="primary" 
-            @click="nextStep" 
+          <button class="primary" @click="nextStep"
             :disabled="isLoading || !canGoToStep(2) || (functionMode === 'batch' && batchData.length === 0)"
-            style="background-color: #10b981; border-color: #10b981;"
-          >
+            style="background-color: #10b981; border-color: #10b981;">
             生成文件
           </button>
         </div>
@@ -1427,23 +1426,14 @@ watch(selectedTemplateId, () => {
         <div class="dialog-body">
           <div class="form-item">
             <label for="template-name">模板名称</label>
-            <input
-              id="template-name"
-              type="text"
-              v-model="selectedTemplate.name"
-              @input="updateTemplateName(selectedTemplate.name)"
-            />
+            <input id="template-name" type="text" v-model="selectedTemplate.name"
+              @input="updateTemplateName(selectedTemplate.name)" />
           </div>
 
           <div class="form-item">
             <label for="output-dir">默认输出目录</label>
             <div class="file-selector">
-              <input
-                id="output-dir"
-                type="text"
-                v-model="selectedTemplate.outputDir"
-                readonly
-              />
+              <input id="output-dir" type="text" v-model="selectedTemplate.outputDir" readonly />
               <button @click="selectOutputDir" :disabled="isLoading">
                 浏览
               </button>
@@ -1452,26 +1442,15 @@ watch(selectedTemplateId, () => {
 
           <div class="form-item">
             <label for="filename-template">文件名模板</label>
-            <input
-              id="filename-template"
-              type="text"
-              v-model="selectedTemplate.filenameTemplate"
+            <input id="filename-template" type="text" v-model="selectedTemplate.filenameTemplate"
               placeholder="例如：&#123;&#123;授权方&#125;&#125;-授权书.docx"
-              @input="updateFilenameTemplate(selectedTemplate.filenameTemplate)"
-            />
+              @input="updateFilenameTemplate(selectedTemplate.filenameTemplate)" />
             <div class="field-selector">
               <label class="field-selector-label">选择字段：</label>
               <div class="checkbox-group">
-                <label
-                  v-for="placeholder in selectedTemplate.placeholders"
-                  :key="placeholder"
-                  class="checkbox-item"
-                >
-                  <input
-                    type="checkbox"
-                    :checked="isFieldInFilename(placeholder)"
-                    @change="toggleFieldInFilename(placeholder, $event)"
-                  />
+                <label v-for="placeholder in selectedTemplate.placeholders" :key="placeholder" class="checkbox-item">
+                  <input type="checkbox" :checked="isFieldInFilename(placeholder)"
+                    @change="toggleFieldInFilename(placeholder, $event)" />
                   <span>{{ placeholder }}</span>
                 </label>
               </div>
@@ -1482,21 +1461,25 @@ watch(selectedTemplateId, () => {
           </div>
 
           <div class="form-item">
+            <label class="checkbox-label"
+              style="display: flex; align-items: center; gap: 8px; cursor: pointer; margin-bottom: 0;">
+              <input type="checkbox" v-model="selectedTemplate.createOuterFolder" @change="saveConfig()"
+                style="width: 18px; height: 18px; padding: 0; border: none; box-shadow: none; accent-color: #396cd8;" />
+              <span style="font-weight: 500; color: #555;">为每个生成的文件创建外层目录</span>
+            </label>
+            <div class="hint-text" style="margin-top: 8px;">
+              选中后，系统会先创建一个与文件名相同的文件夹，然后将文件保存在该文件夹中。
+            </div>
+          </div>
+
+          <div class="form-item">
             <label for="date-format">日期格式</label>
-            <select
-            id="date-format"
-            class="form-select"
-            v-model="selectedTemplate.dateFormat"
-            @change="saveConfig(); updateFormData();"
-          >
-            <option
-              v-for="option in dateFormatOptions"
-              :key="option.value"
-              :value="option.value"
-            >
-              {{ option.label }} - {{ option.description }}
-            </option>
-          </select>
+            <select id="date-format" class="form-select" v-model="selectedTemplate.dateFormat"
+              @change="saveConfig(); updateFormData();">
+              <option v-for="option in dateFormatOptions" :key="option.value" :value="option.value">
+                {{ option.label }} - {{ option.description }}
+              </option>
+            </select>
             <div class="hint-text">
               说明：此格式用于"当前日期"类型的时间字段，生成文档时会使用选定的格式显示日期。
             </div>
@@ -1533,26 +1516,16 @@ watch(selectedTemplateId, () => {
           <div class="panel">
             <h3 class="panel-title">默认值设置</h3>
             <div class="form-grid">
-              <div
-                v-for="placeholder in selectedTemplate.placeholders"
-                :key="placeholder"
-                class="form-item"
-              >
+              <div v-for="placeholder in selectedTemplate.placeholders" :key="placeholder" class="form-item">
                 <label :for="`default-${placeholder}`">{{ placeholder }}</label>
                 <div class="default-value-container">
-                  <input
-                    :id="`default-${placeholder}`"
-                    type="text"
+                  <input :id="`default-${placeholder}`" type="text"
                     v-model="selectedTemplate.defaultValues[placeholder]"
                     @input="updateDefaultValue(placeholder, selectedTemplate.defaultValues[placeholder])"
-                    placeholder="设置默认值"
-                  />
+                    placeholder="设置默认值" />
                   <label class="time-field-checkbox">
-                    <input
-                      type="checkbox"
-                      :checked="isTimeField(placeholder)"
-                      @change="toggleTimeField(placeholder, $event)"
-                    />
+                    <input type="checkbox" :checked="isTimeField(placeholder)"
+                      @change="toggleTimeField(placeholder, $event)" />
                     <span>时间字段</span>
                   </label>
                 </div>
@@ -1577,18 +1550,10 @@ watch(selectedTemplateId, () => {
         <div class="dialog-body">
           <p class="field-info">当前字段：<strong>{{ currentConfiguringField }}</strong></p>
           <div class="time-type-options">
-            <label
-              v-for="option in timeTypeOptions"
-              :key="option.value"
-              class="time-type-option"
-              :class="{ selected: selectedTimeType === option.value }"
-            >
-              <input
-                type="radio"
-                :value="option.value"
-                v-model="selectedTimeType"
-                :name="`time-type-${currentConfiguringField}`"
-              />
+            <label v-for="option in timeTypeOptions" :key="option.value" class="time-type-option"
+              :class="{ selected: selectedTimeType === option.value }">
+              <input type="radio" :value="option.value" v-model="selectedTimeType"
+                :name="`time-type-${currentConfiguringField}`" />
               <div class="option-content">
                 <div class="option-title">{{ option.label }}</div>
                 <div class="option-desc">{{ option.description }}</div>
@@ -1671,7 +1636,7 @@ watch(selectedTemplateId, () => {
   background: rgba(240, 244, 255, 0.9);
 }
 
-.mode-switch input[type="radio"]:checked + span {
+.mode-switch input[type="radio"]:checked+span {
   font-weight: 700;
   color: #396cd8;
 }
@@ -1823,11 +1788,11 @@ watch(selectedTemplateId, () => {
   .batch-action-group {
     padding: 10px;
   }
-  
+
   .table-container {
     max-height: 150px;
   }
-  
+
   .preview-table th,
   .preview-table td {
     padding: 6px 8px;
@@ -2717,50 +2682,50 @@ button.special:hover:not(:disabled) {
     width: 98%;
     max-height: 95vh;
   }
-  
+
   .dialog-small {
     max-width: 98%;
   }
-  
+
   .dialog-body {
     padding: 16px;
   }
-  
+
   .checkbox-group {
     grid-template-columns: 1fr;
   }
-  
+
   .file-selector {
     flex-direction: column;
     gap: 8px;
   }
-  
+
   .file-selector input[type="text"] {
     width: 100%;
   }
-  
+
   .time-type-option {
     padding: 12px 14px;
   }
-  
+
   .option-title {
     font-size: 14px;
   }
-  
+
   .option-desc {
     font-size: 12px;
   }
-  
+
   .option-placeholder {
     font-size: 11px;
     padding: 3px 6px;
   }
-  
+
   .default-value-container {
     flex-direction: column;
     align-items: stretch;
   }
-  
+
   .time-field-checkbox {
     width: 100%;
     justify-content: center;
